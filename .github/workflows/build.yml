@@ -67,16 +67,27 @@ jobs:
           name: RekordJog-${{ matrix.name }}
           path: dist/*
 
+  # Always publish: every push updates the GitHub release for the current
+  # version (creating the v<version> tag on GitHub if it doesn't exist yet).
+  publish:
+    needs: build
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
       - name: Read version
         id: version
-        shell: bash
         run: echo "version=$(node -p "require('./app/tauri.conf.json').version")" >> "$GITHUB_OUTPUT"
 
-      # Always publish: every push updates the release for the current version
-      # (creating the v<version> tag on GitHub if it doesn't exist yet).
-      - name: Publish release
-        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@v2
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - run: ls -la dist
+
+      - uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
           name: RekordJog ${{ steps.version.outputs.version }}
@@ -87,6 +98,7 @@ jobs:
             Use a Numark Mixtrack Go with rekordbox — one app, no mapping files.
 
             **macOS** (Apple Silicon + Intel): download the `.dmg`, drag RekordJog to Applications, then right-click → Open the first time (the app isn't notarised yet).
+
             **Windows 10/11**: run the `-setup.exe` (no admin needed). If SmartScreen appears: More info → Run anyway. Windows also needs the free [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html) installed once for its virtual MIDI driver — the setup assistant walks you through it.
 
             Built from ${{ github.sha }}.
