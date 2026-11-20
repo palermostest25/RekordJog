@@ -131,8 +131,8 @@ cd app && npx @tauri-apps/cli@2 build
 On Linux you also need the usual Tauri packages: `libwebkit2gtk-4.1-dev`, `libasound2-dev`,
 `libayatana-appindicator3-dev`. The app builds and runs there, but rekordbox doesn't.
 
-Pushing a `v*` tag builds the macOS `.dmg` and Windows `-setup.exe` in GitHub Actions and attaches
-them to a release. To sign and notarise the macOS app, add the standard Tauri `APPLE_*` secrets.
+Every push builds the macOS `.dmg` and Windows `-setup.exe` in GitHub Actions and publishes them as
+the release `v<version>` (version from `app/tauri.conf.json`). To sign and notarise the macOS app, add the standard Tauri `APPLE_*` secrets.
 
 ### Supporting another controller
 
