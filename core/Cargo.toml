@@ -1,0 +1,13 @@
+[package]
+name = "rekordjog-core"
+description = "Translates Numark Mixtrack Go MIDI into Pioneer DDJ-SX MIDI for rekordbox (and LEDs back)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"

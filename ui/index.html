@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RekordJog</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- ============ SETUP WIZARD ============ -->
+    <section id="wizard" class="hidden">
+      <header class="wiz-head">
+        <div class="brand"><span class="logo"></span>RekordJog</div>
+        <ol class="steps" id="wiz-steps"></ol>
+        <button class="link" id="wiz-skip">Skip setup</button>
+      </header>
+      <main class="wiz-body" id="wiz-body"></main>
+      <footer class="wiz-foot">
+        <button class="btn ghost" id="wiz-back">Back</button>
+        <div class="grow" id="wiz-hint"></div>
+        <button class="btn primary" id="wiz-next">Next</button>
+      </footer>
+    </section>
+
+    <!-- ============ DASHBOARD ============ -->
+    <section id="dash" class="hidden">
+      <nav class="side">
+        <div class="brand"><span class="logo"></span>RekordJog</div>
+        <button class="nav active" data-view="status"><i>◉</i>Status</button>
+        <button class="nav" data-view="controller"><i>◎</i>Controller</button>
+        <button class="nav" data-view="mapping"><i>⇄</i>Mapping</button>
+        <button class="nav" data-view="settings"><i>⚙</i>Settings</button>
+        <button class="nav" data-view="monitor"><i>≋</i>MIDI monitor</button>
+        <div class="grow"></div>
+        <div class="side-status" id="side-status"></div>
+        <div class="version" id="version"></div>
+      </nav>
+
+      <main class="content">
+        <!-- STATUS -->
+        <div class="view" id="view-status">
+          <div class="banner" id="banner"></div>
+          <div class="decks" id="decks"></div>
+          <h2>System check</h2>
+          <div class="checks" id="checks"></div>
+        </div>
+
+        <!-- CONTROLLER -->
+        <div class="view hidden" id="view-controller">
+          <h1>Your Mixtrack Go</h1>
+          <p class="muted">Everything you touch lights up here — handy to check the connection.</p>
+          <div class="ctl-host" id="ctl-live"></div>
+          <h2>Cheat sheet</h2>
+          <div class="cheats" id="cheats"></div>
+        </div>
+
+        <!-- MAPPING -->
+        <div class="view hidden" id="view-mapping">
+          <div class="row-between">
+            <div>
+              <h1>Mapping</h1>
+              <p class="muted">Every control is already mapped to rekordbox. Change anything you like — it applies instantly. Tip: move a control on your Mixtrack Go and its row lights up.</p>
+            </div>
+            <button class="btn ghost" id="map-reset">Reset to defaults</button>
+          </div>
+          <div id="mapping"></div>
+        </div>
+
+        <!-- SETTINGS -->
+        <div class="view hidden" id="view-settings">
+          <h1>Settings</h1>
+          <div class="card form" id="settings-form">
+            <h3>Jog wheels</h3>
+            <label class="field"><span>Scratch sensitivity <b id="v-scratch"></b></span>
+              <input type="range" min="0.25" max="3" step="0.05" id="s-scratch"></label>
+            <label class="field"><span>Pitch bend / search sensitivity <b id="v-bend"></b></span>
+              <input type="range" min="0.25" max="3" step="0.05" id="s-bend"></label>
+            <label class="toggle"><input type="checkbox" id="s-vinyl"><span>Start in vinyl (scratch) mode</span></label>
+            <h3>Faders &amp; knobs</h3>
+            <label class="toggle"><input type="checkbox" id="s-invert-tempo"><span>Reverse tempo fader direction</span></label>
+            <label class="toggle"><input type="checkbox" id="s-invert-browse"><span>Reverse browse knob direction</span></label>
+            <label class="toggle"><input type="checkbox" id="s-knob-filter"><span>Filter/Low knobs start as Filter (off = Low EQ)</span></label>
+            <label class="field"><span>Fade FX strength <b id="v-fade"></b></span>
+              <input type="range" min="0.1" max="1" step="0.05" id="s-fade"></label>
+            <h3>Controller port</h3>
+            <label class="field"><span>Which MIDI device is your Mixtrack Go?</span>
+              <select id="s-port"></select></label>
+            <h3>App</h3>
+            <label class="toggle"><input type="checkbox" id="s-tray"><span>Keep running in the menu bar / tray when the window is closed</span></label>
+            <label class="toggle"><input type="checkbox" id="s-login"><span>Start RekordJog when I log in</span></label>
+            <div class="row gap">
+              <button class="btn ghost" id="rerun-setup">Run setup again</button>
+              <button class="btn ghost danger" id="quit-app">Quit RekordJog</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- MONITOR -->
+        <div class="view hidden" id="view-monitor">
+          <div class="row-between">
+            <div>
+              <h1>MIDI monitor</h1>
+              <p class="muted">See every message between your controller, RekordJog and rekordbox.</p>
+            </div>
+            <div class="row gap">
+              <label class="toggle inline"><input type="checkbox" id="mon-on"><span>Record</span></label>
+              <button class="btn ghost" id="copy-report">Copy diagnostics</button>
+            </div>
+          </div>
+          <div class="legend">
+            <span class="tag ctl">Controller → RekordJog</span>
+            <span class="tag rbo">RekordJog → rekordbox</span>
+            <span class="tag rbi">rekordbox → RekordJog</span>
+            <span class="tag led">RekordJog → controller LEDs</span>
+          </div>
+          <div class="monitor" id="monitor"><div class="empty">Turn on “Record” and move something.</div></div>
+        </div>
+      </main>
+    </section>
+  </div>
+  <div class="toast hidden" id="toast"></div>
+
+
+  <script src="app.js"></script>
+</body>
+</html>
