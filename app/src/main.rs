@@ -53,6 +53,15 @@ fn poll(state: State<AppState>, upd: State<UpdaterState>, events_since: u64, log
 }
 
 #[tauri::command]
+fn refresh_lights(state: State<AppState>) {
+    let now = state.0.now_ms();
+    state.0.with_engine(|e| {
+        e.retry_light_show_stop(now);
+        (Vec::new(), ())
+    });
+}
+
+#[tauri::command]
 fn check_updates(upd: State<UpdaterState>) {
     upd.0.request_check();
 }
@@ -179,7 +188,8 @@ fn main() {
             report,
             quit,
             check_updates,
-            install_update
+            install_update,
+            refresh_lights
         ])
         .setup(move |app| {
             // CoreMIDI only refreshes its device list on the run loop of the

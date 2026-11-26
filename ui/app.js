@@ -263,6 +263,7 @@ function bindDash() {
     renderMapping();
     toast("Mapping reset to defaults");
   });
+  $("#refresh-lights").addEventListener("click", () => { invoke("refresh_lights"); toast("Stopping the light show and repainting the controller's lights…"); });
   $("#rerun-setup").addEventListener("click", () => showWizard(0));
   $("#quit-app").addEventListener("click", () => invoke("quit"));
   $("#mon-on").addEventListener("change", (e) => {

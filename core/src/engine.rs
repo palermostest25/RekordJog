@@ -12,7 +12,10 @@ pub const MIXTRACK_JOG_TICKS: f64 = 242.0;
 pub const DDJ_JOG_TICKS: f64 = 2048.0;
 const JOG_BASE: f64 = DDJ_JOG_TICKS / MIXTRACK_JOG_TICKS;
 
-const LED_REFRESH_DELAY_MS: u64 = 1500;
+/// After connecting, ask the controller to stop its power-on light show
+/// again at these offsets (ms) and repaint every LED. A Mac can open the
+/// controller while it is still booting, when it ignores the first request.
+const INIT_RETRY_MS: [u64; 5] = [500, 1500, 3000, 5000, 8000];
 const BLINK_MS: u64 = 500;
 const MAX_EVENTS: usize = 256;
 
@@ -129,7 +132,8 @@ pub struct Engine {
     fadefx: bool,
     blink_on: bool,
     next_blink: u64,
-    refresh_at: Option<u64>,
+    /// pending (time, also request a state dump) light-show stops + repaints
+    init_at: Vec<(u64, bool)>,
     led_cache: HashMap<(u8, u8), u8>,
     events: VecDeque<UiEvent>,
     controller_messages: u64,
@@ -166,7 +170,7 @@ impl Engine {
             fadefx: false,
             blink_on: false,
             next_blink: 0,
-            refresh_at: None,
+            init_at: Vec::new(),
             led_cache: HashMap::new(),
             events: VecDeque::new(),
             controller_messages: 0,
@@ -292,9 +296,15 @@ impl Engine {
     pub fn controller_connected(&mut self, now_ms: u64) -> Vec<Out> {
         let mut out = vec![Out::ctl(&mt::SYSEX_IDENTITY), Out::ctl(&mt::SYSEX_DUMP_STATE)];
         out.extend(self.refresh_leds());
-        // The power-on light show can overwrite LEDs, so paint them again.
-        self.refresh_at = Some(now_ms + LED_REFRESH_DELAY_MS);
+        // The light show can ignore the first request and overwrite LEDs,
+        // so ask again a few times and repaint after each.
+        self.init_at = INIT_RETRY_MS.iter().map(|d| (now_ms + d, *d == 1500)).collect();
         out
+    }
+
+    /// Stop the light show and repaint every LED again (manual fallback).
+    pub fn retry_light_show_stop(&mut self, now_ms: u64) {
+        self.init_at = INIT_RETRY_MS.iter().take(3).map(|d| (now_ms + d - INIT_RETRY_MS[0], false)).collect();
     }
 
     /// Called when the controller disappears: release anything held.
@@ -344,12 +354,18 @@ impl Engine {
     /// Periodic housekeeping (call every ~20-50 ms).
     pub fn tick(&mut self, now_ms: u64) -> Vec<Out> {
         let mut out = Vec::new();
-        if let Some(at) = self.refresh_at {
-            if now_ms >= at {
-                self.refresh_at = None;
-                self.led_cache.clear();
-                out.extend(self.refresh_leds());
+        if self.init_at.first().is_some_and(|(at, _)| now_ms >= *at) {
+            // skip any retries that are already overdue, run one
+            let mut dump = false;
+            while self.init_at.first().is_some_and(|(at, _)| now_ms >= *at) {
+                dump |= self.init_at.remove(0).1;
             }
+            out.push(Out::ctl(&mt::SYSEX_IDENTITY));
+            if dump {
+                out.push(Out::ctl(&mt::SYSEX_DUMP_STATE));
+            }
+            self.led_cache.clear();
+            out.extend(self.refresh_leds());
         }
         if now_ms >= self.next_blink {
             self.next_blink = now_ms + BLINK_MS;
@@ -920,6 +936,31 @@ mod tests {
         let mut e = Engine::new(Config::default());
         e.controller_connected(0);
         e
+    }
+
+    #[test]
+    fn light_show_stop_is_retried() {
+        let mut e = Engine::new(Config::default());
+        let first = ctl(&e.controller_connected(1000));
+        assert_eq!(first[0], mt::SYSEX_IDENTITY.to_vec());
+        assert!(ctl(&e.tick(1100)).iter().all(|m| m[0] != 0xF0));
+        let mut stops = 0;
+        let mut repaints = 0;
+        for t in (1100..12_000).step_by(20) {
+            let out = ctl(&e.tick(t));
+            if out.contains(&mt::SYSEX_IDENTITY.to_vec()) {
+                stops += 1;
+                // every LED is repainted, e.g. the play buttons
+                assert!(out.contains(&vec![0x90, 0x00, LED_DIM]));
+                repaints += 1;
+            }
+        }
+        assert_eq!((stops, repaints), (5, 5));
+        // a late tick runs overdue retries only once
+        e.controller_connected(0);
+        let late = ctl(&e.tick(60_000));
+        assert_eq!(late.iter().filter(|m| m[0] == 0xF0 && m[1] == 0x7E).count(), 1);
+        assert!(ctl(&e.tick(60_020)).iter().all(|m| m[0] != 0xF0));
     }
 
     #[test]
