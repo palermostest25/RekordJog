@@ -21,6 +21,9 @@ midir = "0.10"
 dirs = "6"
 open = "5"
 sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+ureq = { version = "2", default-features = false, features = ["json", "native-tls", "gzip"] }
+native-tls = "0.2"
+sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 libloading = "0.8"

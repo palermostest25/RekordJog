@@ -4,6 +4,7 @@ mod diag;
 mod rekordbox;
 mod runtime;
 mod settings;
+mod updater;
 mod vport;
 
 use runtime::{lock, LogLine, Runtime, SeqEvent, Status};
@@ -18,6 +19,7 @@ use tauri::{AppHandle, Manager, State, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
 struct AppState(Arc<Runtime>);
+struct UpdaterState(Arc<updater::Updater>);
 
 #[derive(Serialize)]
 struct Poll {
@@ -29,10 +31,11 @@ struct Poll {
     log: Vec<LogLine>,
     platform: &'static str,
     version: &'static str,
+    update: updater::UpdateInfo,
 }
 
 #[tauri::command]
-fn poll(state: State<AppState>, events_since: u64, log_since: u64) -> Poll {
+fn poll(state: State<AppState>, upd: State<UpdaterState>, events_since: u64, log_since: u64) -> Poll {
     let rt = &state.0;
     let status = rt.status();
     let checks = diag::checks(&status);
@@ -45,7 +48,18 @@ fn poll(state: State<AppState>, events_since: u64, log_since: u64) -> Poll {
         status,
         platform: std::env::consts::OS,
         version: env!("CARGO_PKG_VERSION"),
+        update: upd.0.info(),
     }
+}
+
+#[tauri::command]
+fn check_updates(upd: State<UpdaterState>) {
+    upd.0.request_check();
+}
+
+#[tauri::command]
+fn install_update(upd: State<UpdaterState>) {
+    upd.0.request_install();
 }
 
 #[tauri::command]
@@ -144,12 +158,15 @@ fn main() {
     let settings = settings::load();
     let rt = Runtime::new(settings);
     let rt_setup = rt.clone();
+    let updater = updater::Updater::new();
+    let updater_setup = updater.clone();
     let rt_events = rt.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--hidden"])))
         .manage(AppState(rt))
+        .manage(UpdaterState(updater))
         .invoke_handler(tauri::generate_handler![
             poll,
             get_settings,
@@ -160,7 +177,9 @@ fn main() {
             launch_rekordbox,
             open_url,
             report,
-            quit
+            quit,
+            check_updates,
+            install_update
         ])
         .setup(move |app| {
             // CoreMIDI only refreshes its device list on the run loop of the
@@ -170,6 +189,7 @@ fn main() {
                 std::mem::forget(client);
             }
             rt_setup.start();
+            updater_setup.start(rt_setup.clone(), app.handle().clone());
 
             let show = MenuItem::with_id(app, "show", "Show RekordJog", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit RekordJog", true, None::<&str>)?;

@@ -17,6 +17,9 @@ unreleased, and don't ask first.
   and Windows `-setup.exe` and publishes/updates the release `v<version>`
   (it creates the tag on GitHub). Cloud sessions can't push tags (HTTP 403),
   so never rely on pushing a tag yourself.
+- The app's auto-updater (`app/src/updater.rs`) reads `releases/latest` from
+  `palermostest25/RekordJog` and compares versions, so an unbumped version never
+  reaches users.
 - Then confirm it worked: check the Actions run succeeded and the release has
   both installers attached, and give the user the release link.
 

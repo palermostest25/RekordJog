@@ -1,3 +1,4 @@
+use crate::{Kind, Side};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -22,6 +23,28 @@ pub struct Config {
     pub fadefx_depth: f64,
     /// control id -> action id, only for controls the user changed.
     pub bindings: BTreeMap<String, String>,
+    /// Pad mode for each MODE-light slot (see `ddj::PAD_SLOTS`); "off" skips it.
+    pub pad_modes: Vec<String>,
+    /// Controls added with MIDI Learn (messages RekordJog doesn't know).
+    pub custom: Vec<CustomControl>,
+}
+
+/// A controller message mapped by the user with MIDI Learn.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CustomControl {
+    pub label: String,
+    /// Status byte as received (note-off is stored as note-on).
+    pub status: u8,
+    pub data1: u8,
+    pub kind: Kind,
+    pub side: Option<Side>,
+    pub action: String,
+}
+
+impl CustomControl {
+    pub fn id(&self) -> String {
+        format!("custom.{:02x}{:02x}", self.status, self.data1)
+    }
 }
 
 impl Default for Config {
@@ -35,6 +58,8 @@ impl Default for Config {
             knob_default_filter: true,
             fadefx_depth: 0.8,
             bindings: BTreeMap::new(),
+            pad_modes: crate::ddj::DEFAULT_PAD_SLOTS.iter().map(|s| s.to_string()).collect(),
+            custom: Vec::new(),
         }
     }
 }
@@ -45,6 +70,26 @@ impl Config {
         self.scratch_sensitivity = clamp(self.scratch_sensitivity, 0.1, 4.0, 1.0);
         self.bend_sensitivity = clamp(self.bend_sensitivity, 0.1, 4.0, 1.0);
         self.fadefx_depth = clamp(self.fadefx_depth, 0.0, 1.0, 0.8);
+        let slots = crate::ddj::PAD_SLOTS.len();
+        for (i, def) in crate::ddj::DEFAULT_PAD_SLOTS.iter().enumerate() {
+            if self.pad_modes.len() <= i {
+                self.pad_modes.push(def.to_string());
+            }
+        }
+        self.pad_modes.truncate(slots);
+        for m in self.pad_modes.iter_mut() {
+            if m != "off" && crate::ddj::pad_mode(m).is_none() {
+                *m = "off".into();
+            }
+        }
+        if self.pad_modes.iter().all(|m| m == "off") {
+            self.pad_modes[0] = "hot_cue".into();
+        }
+        for c in self.custom.iter_mut() {
+            if c.status & 0xF0 == 0x80 {
+                c.status = 0x90 | (c.status & 0x0F);
+            }
+        }
         self
     }
 }

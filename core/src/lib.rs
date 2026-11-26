@@ -82,6 +82,10 @@ pub enum Kind {
 pub struct Catalog {
     pub controls: Vec<ControlInfo>,
     pub actions: Vec<ddj::ActionInfo>,
+    /// MODE-light slots, in MODE-button order.
+    pub pad_slots: Vec<String>,
+    /// Pad modes a slot can hold (id, name).
+    pub pad_modes: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -127,5 +131,7 @@ pub fn catalog() -> Catalog {
     Catalog {
         controls,
         actions: ddj::actions().to_vec(),
+        pad_slots: ddj::PAD_SLOTS.iter().map(|(n, _)| n.to_string()).collect(),
+        pad_modes: ddj::PAD_MODE_KINDS.iter().map(|m| (m.id.to_string(), m.name.to_string())).collect(),
     }
 }

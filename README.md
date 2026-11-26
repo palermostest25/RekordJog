@@ -20,7 +20,11 @@ Mixtrack Go  ──USB──▶  RekordJog  ──"PIONEER DDJ-SX"──▶  rek
   to fix anything that's wrong.
 - **Auto-connect.** It runs in the menu bar or system tray and reconnects whenever you plug the
   controller in. It can also start at login.
-- **Remappable.** Every button and knob can be reassigned from a list, and changes apply instantly.
+- **Auto-updates.** New versions download in the background, are checksum-verified, and install
+  themselves only while rekordbox is closed, so an update never interrupts a set.
+- **Fully remappable.** Any button or knob can trigger any of the ~350 functions in rekordbox's DDJ-SX
+  mapping. Each MODE light can hold any pad mode, and **MIDI Learn** maps controls RekordJog doesn't
+  know yet. Mappings can be exported and imported.
 - **Built-in MIDI monitor** and a "Copy diagnostics" button for bug reports.
 
 ## Install
@@ -69,7 +73,7 @@ SHIFT = hold **MODE**. The controller handles SHIFT itself.
 | Acapel | 4-beat auto loop | Loop ÷2 |
 | Instru | Beat FX on/off (left = FX1, right = FX2) | Loop ×2 |
 | Headphone cue | Headphone cue | Tap BPM |
-| MODE (tap) | Pad mode, matching the controller's lights: Hot Cue → Loops → FX (rekordbox Pad FX) → Sampler | – |
+| MODE (tap) | Pad mode, following the controller's lights: Hot Cue → Loops → FX (Pad FX) → Sampler → STEMS light (Pad FX 2). Change any of them under **Mapping → Pad modes** | – |
 | Pads in Loops mode | 1, 2, 4, 8-beat loop; press the lit pad again to exit | Exit loop |
 | Pads 1–4 | Follow the pad mode, with LEDs | Shift functions (for example, delete hot cue) |
 | Level knob | Channel fader | – |
@@ -80,7 +84,8 @@ SHIFT = hold **MODE**. The controller handles SHIFT itself.
 | Load left / right | Load to deck 1 / 2 | Switch Filter ↔ Low EQ / toggle vinyl mode |
 | Main / Cue level | Not mapped (assign in **Mapping**) | – |
 
-You can change anything under **Mapping**. The jog resolution is calibrated so one turn of the
+You can change anything under **Mapping**: pick any rekordbox DDJ-SX function for any control, choose
+the pad mode on each MODE light (or switch lights off), and use **Learn** for anything else. The jog resolution is calibrated so one turn of the
 platter equals one turn of the record on screen. You can adjust scratch and nudge sensitivity under
 **Settings**.
 

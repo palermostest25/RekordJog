@@ -33,11 +33,10 @@ pub const LOADED_INDICATOR_STATUS: u8 = 0x9B;
 pub const HIRES_CENTER: u16 = 8192;
 pub const HIRES_MAX: u16 = 16383;
 
-/// Pad modes cycled by the MODE button, in the same order as the Mixtrack
-/// Go's mode lights. `leds` are indices into its mode indicator LEDs
-/// (0 HOT CUE, 1 LOOPS, 2 SAMPLER, 3 STEMS; FX = LOOPS + SAMPLER).
-#[derive(Clone, Copy, Debug)]
+/// A rekordbox pad mode the pads can be in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PadMode {
+    pub id: &'static str,
     pub name: &'static str,
     /// first DDJ-SX pad note for this mode; +8 is the shifted pad
     pub base: u8,
@@ -47,15 +46,41 @@ pub struct PadMode {
     /// Pads make 1/2/4/8-beat loops (handled by RekordJog, because the
     /// DDJ-SX profile in rekordbox has no beat-loop pad mode).
     pub beat_loop: bool,
-    pub leds: &'static [usize],
 }
 
-pub const PAD_MODES: &[PadMode] = &[
-    PadMode { name: "Hot Cue", base: 0x00, mode_note: Some(0x1B), beat_loop: false, leds: &[0] },
-    PadMode { name: "Loops", base: 0x00, mode_note: None, beat_loop: true, leds: &[1] },
-    PadMode { name: "Pad FX", base: 0x10, mode_note: Some(0x1E), beat_loop: false, leds: &[1, 2] },
-    PadMode { name: "Sampler", base: 0x30, mode_note: Some(0x22), beat_loop: false, leds: &[2] },
+const fn pm(id: &'static str, name: &'static str, base: u8, note: u8) -> PadMode {
+    PadMode { id, name, base, mode_note: Some(note), beat_loop: false }
+}
+
+/// Every pad mode that can be put on a MODE-light slot.
+pub const PAD_MODE_KINDS: &[PadMode] = &[
+    pm("hot_cue", "Hot Cue", 0x00, 0x1B),
+    PadMode { id: "loops", name: "Loops", base: 0x00, mode_note: None, beat_loop: true },
+    pm("pad_fx1", "Pad FX", 0x10, 0x1E),
+    pm("pad_fx2", "Pad FX 2", 0x50, 0x6B),
+    pm("beat_jump", "Beat Jump", 0x40, 0x69),
+    pm("sampler", "Sampler", 0x30, 0x22),
+    pm("velocity_sampler", "Velocity Sampler", 0x70, 0x41),
+    pm("slicer", "Slicer", 0x20, 0x20),
+    pm("slicer_loop", "Slicer Loop", 0x60, 0x6D),
 ];
+
+pub fn pad_mode(id: &str) -> Option<&'static PadMode> {
+    PAD_MODE_KINDS.iter().find(|m| m.id == id)
+}
+
+/// The MODE button steps through these slots in order, lighting the
+/// Mixtrack Go's mode LEDs (0 HOT CUE, 1 LOOPS, 2 SAMPLER, 3 STEMS).
+/// Each slot can hold any pad mode, or be switched off.
+pub const PAD_SLOTS: &[(&str, &[usize])] = &[
+    ("HOT CUE light", &[0]),
+    ("LOOPS light", &[1]),
+    ("FX lights (LOOPS + SAMPLER)", &[1, 2]),
+    ("SAMPLER light", &[2]),
+    ("STEMS light", &[3]),
+];
+
+pub const DEFAULT_PAD_SLOTS: [&str; 5] = ["hot_cue", "loops", "pad_fx1", "sampler", "pad_fx2"];
 
 // Loop buttons on the deck channel
 pub const AUTO_LOOP: u8 = 0x14;
@@ -82,6 +107,8 @@ pub enum Target {
     Note { status: u8, note: u8, led: Option<(u8, u8)> },
     /// DDJ-SX 14-bit knob/fader (MSB on `cc`, LSB on `cc + 0x20`).
     HiRes { status: u8, cc: u8 },
+    /// DDJ-SX 7-bit knob.
+    Cc { status: u8, cc: u8 },
     /// DDJ-SX relative encoder.
     Rotary { status: u8, cc: u8 },
     /// Crossfader, with Fade FX handled by the engine.
@@ -107,7 +134,7 @@ macro_rules! a {
     };
 }
 
-const ACTIONS: &[ActionInfo] = &[
+const CURATED: &[ActionInfo] = &[
     a!("none", "Do nothing", "General", Button, false),
     a!("play", "Play / Pause", "Deck", Button, true),
     a!("play_shift", "Stutter (Shift + Play)", "Deck", Button, true),
@@ -170,12 +197,19 @@ const ACTIONS: &[ActionInfo] = &[
     a!("fx2_beat", "Beat FX 2 beat length", "Effects", Encoder, false),
 ];
 
+/// Curated actions followed by every usable function from rekordbox's
+/// own DDJ-SX mapping file.
 pub fn actions() -> &'static [ActionInfo] {
-    ACTIONS
+    static ALL: std::sync::OnceLock<Vec<ActionInfo>> = std::sync::OnceLock::new();
+    ALL.get_or_init(|| {
+        let mut v = CURATED.to_vec();
+        v.extend(csv::table().iter().map(|c| c.info));
+        v
+    })
 }
 
 pub fn action_info(id: &str, kind: Kind) -> Option<&'static ActionInfo> {
-    ACTIONS.iter().find(|a| a.id == id && a.kind == kind)
+    actions().iter().find(|a| a.id == id && a.kind == kind)
 }
 
 fn deck_note(d: u8, note: u8) -> Target {
@@ -196,6 +230,9 @@ fn global_note(note: u8, led: bool) -> Target {
 pub fn resolve(id: &str, side: Option<Side>) -> Option<Target> {
     let d = side.map(|s| s.idx() as u8);
     let deck = |f: &dyn Fn(u8) -> Target| d.map(f);
+    if id.starts_with("ddj:") {
+        return csv::resolve(id, side);
+    }
     let t = match id {
         "none" => Target::None,
         "play" => return deck(&|d| deck_note(d, PLAY)),
@@ -286,4 +323,138 @@ pub fn to_hires(v: u8) -> u16 {
 pub fn split_hires(v: u16) -> (u8, u8) {
     let v = v.min(HIRES_MAX);
     ((v >> 7) as u8, (v & 0x7F) as u8)
+}
+
+/// rekordbox's stock `PIONEER DDJ-SX.midi.csv`, turned into mapping targets
+/// so any control can trigger any function rekordbox supports on a DDJ-SX.
+mod csv {
+    use super::{ActionInfo, Target};
+    use crate::{Kind, Side};
+    use std::collections::HashSet;
+    use std::sync::OnceLock;
+
+    const SOURCE: &str = include_str!("../../docs/PIONEER DDJ-SX.midi.original.csv");
+
+    #[derive(Clone, Copy, Debug)]
+    enum Addr {
+        /// Same message for every deck.
+        Fixed(u8, u8),
+        /// Status low nibble = channel listed per deck (deck 1, deck 2).
+        Channel { status: u8, d1: u8, chans: [u8; 2] },
+        /// Full message listed per deck.
+        PerDeck([(u8, u8); 2]),
+    }
+
+    impl Addr {
+        fn at(self, side: Option<Side>) -> Option<(u8, u8)> {
+            match (self, side) {
+                (Addr::Fixed(s, d), _) => Some((s, d)),
+                (Addr::Channel { status, d1, chans }, Some(side)) => Some((status | chans[side.idx()], d1)),
+                (Addr::PerDeck(v), Some(side)) => Some(v[side.idx()]),
+                _ => None,
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct Row {
+        pub info: ActionInfo,
+        input: Addr,
+        output: Option<Addr>,
+        hires: bool,
+    }
+
+    fn hex2(s: &str) -> Option<(u8, u8)> {
+        let s = s.trim();
+        if s.len() != 4 {
+            return None;
+        }
+        Some((u8::from_str_radix(&s[..2], 16).ok()?, u8::from_str_radix(&s[2..], 16).ok()?))
+    }
+
+    fn addr(code: &str, decks: &[&str]) -> Option<Addr> {
+        let d1 = decks.first().map(|s| s.trim()).unwrap_or("");
+        let d2 = decks.get(1).map(|s| s.trim()).unwrap_or("");
+        match hex2(code) {
+            Some((status, data)) if d1.is_empty() => Some(Addr::Fixed(status, data)),
+            Some((status, data)) => {
+                let c1: u8 = d1.parse().ok()?;
+                let c2: u8 = d2.parse().ok()?;
+                (c1 < 16 && c2 < 16).then_some(Addr::Channel { status: status & 0xF0, d1: data, chans: [c1, c2] })
+            }
+            None => Some(Addr::PerDeck([hex2(d1)?, hex2(d2)?])),
+        }
+    }
+
+    fn leak(s: String) -> &'static str {
+        Box::leak(s.into_boxed_str())
+    }
+
+    pub fn table() -> &'static [Row] {
+        static T: OnceLock<Vec<Row>> = OnceLock::new();
+        T.get_or_init(|| {
+            let mut rows = Vec::new();
+            let mut seen = HashSet::new();
+            let mut section = "Other";
+            for line in SOURCE.lines() {
+                let f: Vec<&'static str> = line.split(',').collect();
+                if f.len() < 15 {
+                    continue;
+                }
+                if let Some(sec) = f[0].strip_prefix("# ") {
+                    section = sec.trim();
+                    continue;
+                }
+                let (name, function, ty) = (f[0].trim(), f[1].trim(), f[2].trim());
+                if name.is_empty() || name.starts_with('#') || name.starts_with('@') {
+                    continue;
+                }
+                let (kind, hires) = match ty {
+                    "Button" | "Pad" => (Kind::Button, false),
+                    "KnobSliderHiRes" => (Kind::Knob, true),
+                    "KnobSlider" => (Kind::Knob, false),
+                    "Rotary" => (Kind::Encoder, false),
+                    _ => continue,
+                };
+                if f[13].contains("RO") {
+                    continue; // read-only state messages
+                }
+                let Some(input) = addr(f[3], &f[4..8]) else { continue };
+                let output = if f[8].trim().is_empty() && f[9].trim().is_empty() { None } else { addr(f[8], &f[9..13]) };
+                let key = if function.is_empty() { name } else { function };
+                let mut id = format!("ddj:{key}");
+                let mut n = 2;
+                while !seen.insert(id.clone()) {
+                    id = format!("ddj:{key}#{n}");
+                    n += 1;
+                }
+                let comment = f[14].trim();
+                let label = if comment.is_empty() { key.to_string() } else { format!("{key} — {comment}") };
+                rows.push(Row {
+                    info: ActionInfo {
+                        id: leak(id),
+                        label: leak(label),
+                        group: leak(format!("rekordbox DDJ-SX: {section}")),
+                        kind,
+                        per_deck: !matches!(input, Addr::Fixed(..)),
+                    },
+                    input,
+                    output,
+                    hires,
+                });
+            }
+            rows
+        })
+    }
+
+    pub fn resolve(id: &str, side: Option<Side>) -> Option<Target> {
+        let row = table().iter().find(|r| r.info.id == id)?;
+        let (status, d1) = row.input.at(side)?;
+        Some(match row.info.kind {
+            Kind::Button => Target::Note { status, note: d1, led: row.output.and_then(|o| o.at(side)) },
+            Kind::Knob if row.hires => Target::HiRes { status, cc: d1 },
+            Kind::Knob => Target::Cc { status, cc: d1 },
+            _ => Target::Rotary { status, cc: d1 },
+        })
+    }
 }

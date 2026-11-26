@@ -239,3 +239,21 @@ kbd { font: 600 11.5px/1 inherit; background: var(--card2); border: 1px solid #3
   .features, .tasks { grid-template-columns: 1fr 1fr; }
   .decks { grid-template-columns: 1fr; }
 }
+
+/* mapping extras */
+.slotgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
+.slot { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.slot .lights { display: flex; gap: 5px; }
+.slot .lights i { width: 10px; height: 10px; border-radius: 3px; background: #2c3249; }
+.slot .lights i.on { background: var(--accent2); box-shadow: 0 0 8px var(--accent2); }
+.slot b { font-size: 13px; }
+.learnbar { display: flex; align-items: center; gap: 14px; background: var(--card); border: 1px dashed #3b4366; border-radius: 12px; padding: 14px 16px; }
+.learnbar.listening { border-color: var(--accent2); background: rgba(255,45,122,.08); }
+.learnrow { display: grid; grid-template-columns: 1.1fr 90px 110px 110px 1.6fr auto; gap: 8px; align-items: center; padding: 9px 16px; border-top: 1px solid var(--line); }
+.learnrow:first-child { border-top: none; }
+.learnrow input[type=text] { background: var(--card2); color: var(--text); border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; font: inherit; width: 100%; }
+.learnrow code { font: 12px ui-monospace, Menlo, Consolas, monospace; color: var(--muted); }
+.import { display: flex; flex-direction: column; gap: 10px; margin: 12px 0; }
+.import textarea { min-height: 120px; background: #090b11; color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 10px; font: 12px ui-monospace, Menlo, Consolas, monospace; -webkit-user-select: text; user-select: text; }
+.updstrip { display: flex; align-items: center; gap: 12px; background: rgba(90,169,255,.1); border: 1px solid rgba(90,169,255,.35); color: #c6dcff; border-radius: 12px; padding: 10px 14px; margin-bottom: 12px; }
+.upd { min-height: 34px; }

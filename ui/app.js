@@ -45,7 +45,7 @@ async function pollLoop() {
   try {
     const p = await invoke("poll", { eventsSince: S.eventsSeq, logSince: S.logSeq });
     S.poll = p;
-    for (const e of p.events) { S.eventsSeq = Math.max(S.eventsSeq, e.seq); onControl(e.id, e.value); }
+    for (const e of p.events) { S.eventsSeq = Math.max(S.eventsSeq, e.seq); onControl(e.id, e.value, e.msg); }
     if (p.log.length) { S.logSeq = p.log[p.log.length - 1].seq; appendLog(p.log); }
     render();
   } catch (err) {
@@ -145,7 +145,8 @@ function elementId(id) {
   return id.replace(/_shift$/, "").replace(/^browse_(press)$/, "browse");
 }
 
-function onControl(id, value) {
+function onControl(id, value, msg) {
+  if (id === "unmapped") { if (S.learning && msg) learnCaptured(msg, value); return; }
   // setup tasks
   const side = id.startsWith("left.") ? "left" : id.startsWith("right.") ? "right" : null;
   if (id === "left.touch" && value > 0) S.tasks.add("touch");
@@ -232,7 +233,31 @@ function setView(v) {
 
 function bindDash() {
   $$(".nav").forEach((n) => n.addEventListener("click", () => setView(n.dataset.view)));
+  $("#map-export").addEventListener("click", async () => {
+    const e = S.settings.engine;
+    const text = JSON.stringify({ rekordjog_mapping: 1, bindings: e.bindings, pad_modes: e.pad_modes, custom: e.custom }, null, 2);
+    try { await navigator.clipboard.writeText(text); toast("Mapping copied — paste it anywhere to share or back it up"); }
+    catch { $("#import-box").classList.remove("hidden"); $("#import-text").value = text; toast("Copy the text below"); }
+  });
+  $("#map-import").addEventListener("click", () => { $("#import-box").classList.remove("hidden"); $("#import-text").value = ""; $("#import-text").focus(); });
+  $("#import-cancel").addEventListener("click", () => $("#import-box").classList.add("hidden"));
+  $("#import-apply").addEventListener("click", async () => {
+    try {
+      const m = JSON.parse($("#import-text").value);
+      if (typeof m !== "object" || !m) throw new Error();
+      const e = S.settings.engine;
+      if (m.bindings) e.bindings = m.bindings;
+      if (Array.isArray(m.pad_modes)) e.pad_modes = m.pad_modes;
+      if (Array.isArray(m.custom)) e.custom = m.custom;
+      await saveSettings();
+      renderMapping();
+      $("#import-box").classList.add("hidden");
+      toast("Mapping imported");
+    } catch { toast("That doesn't look like a RekordJog mapping"); }
+  });
   $("#map-reset").addEventListener("click", async () => {
+    S.settings.engine.pad_modes = ["hot_cue", "loops", "pad_fx1", "sampler", "pad_fx2"];
+    S.settings.engine.custom = [];
     S.settings.engine.bindings = {};
     await saveSettings();
     renderMapping();
@@ -256,6 +281,7 @@ function render() {
   if (!$("#wizard").classList.contains("hidden")) { renderWizardLive(); return; }
   const p = S.poll;
   $("#version").textContent = `v${p.version} · ${p.platform}`;
+  renderUpdate(p.update);
 
   // sidebar
   const line = (label, state) => `<div class="dotline"><span class="dot ${state}"></span>${label}</div>`;
@@ -274,6 +300,34 @@ function render() {
     if (b._h !== banner + cls) { b.className = "banner " + cls; b.innerHTML = banner; b._h = banner + cls; }
     renderChecks($("#checks"));
     renderDecks();
+  }
+}
+
+function updateText(u) {
+  if (!u) return "";
+  switch (u.state) {
+    case "checking": return "Checking for updates…";
+    case "up_to_date": return `You're on the latest version (${u.current}).`;
+    case "downloading": return `Downloading ${u.latest}… ${Math.round(u.progress * 100)}%`;
+    case "ready": return `Version ${u.latest} is ready${u.waiting_for ? ` — ${u.waiting_for}` : " to install"}.`;
+    case "installing": return `Installing ${u.latest}…`;
+    case "unsupported": return "Automatic updates aren't available on this system.";
+    case "error": return `Update problem: ${u.message}`;
+    default: return `Version ${u.current}.`;
+  }
+}
+
+function renderUpdate(u) {
+  if (!u) return;
+  const t = updateText(u);
+  if ($("#upd-status").textContent !== t) $("#upd-status").textContent = t;
+  $("#upd-install").classList.toggle("hidden", u.state !== "ready");
+  const strip = $("#updstrip");
+  const show = u.state === "ready" || u.state === "downloading" || u.state === "installing";
+  strip.classList.toggle("hidden", !show);
+  if (show) {
+    const html = `<span>⬆</span><span class="grow">${esc(t)}</span>${u.state === "ready" ? '<button class="btn small" data-upd="1">Restart &amp; update now</button>' : ""}`;
+    if (strip._h !== html) { strip.innerHTML = html; strip._h = html; const b = strip.querySelector("[data-upd]"); if (b) b.onclick = () => { invoke("install_update"); toast("Installing — RekordJog will restart"); }; }
   }
 }
 
@@ -304,7 +358,90 @@ function actionLabel(id, kind) {
   return S.catalog.actions.find((a) => a.id === id && a.kind === kind)?.label ?? id;
 }
 
+function optionsHTML(control, cur, def) {
+  const groups = {};
+  for (const a of actionsFor(control)) (groups[a.group] ??= []).push(a);
+  return Object.entries(groups).map(([g, as]) =>
+    `<optgroup label="${esc(g)}">${as.map((a) => `<option value="${esc(a.id)}" ${a.id === cur ? "selected" : ""}>${esc(a.label)}${a.id === def ? " (default)" : ""}</option>`).join("")}</optgroup>`).join("");
+}
+
+const hex = (n) => n.toString(16).toUpperCase().padStart(2, "0");
+
+function renderPadSlots() {
+  const e = S.settings.engine;
+  const LIGHTS = [[0], [1], [1, 2], [2], [3]];
+  const html = `<div class="mapsec"><h2>Pad modes (MODE button)</h2>
+    <p class="muted">Tapping MODE steps through these, lighting the controller's mode lights as shown. Put any rekordbox pad mode on any light, or switch a light off to skip it.</p>
+    <div class="slotgrid">${S.catalog.pad_slots.map((name, i) => `<div class="slot">
+      <div class="lights">${[0, 1, 2, 3].map((l) => `<i class="${LIGHTS[i].includes(l) ? "on" : ""}" title="${["HOT CUE", "LOOPS", "SAMPLER", "STEMS"][l]}"></i>`).join("")}</div>
+      <b>${esc(name)}</b>
+      <select data-slot="${i}"><option value="off" ${e.pad_modes[i] === "off" ? "selected" : ""}>Off (skip)</option>
+      ${S.catalog.pad_modes.map(([id, n]) => `<option value="${esc(id)}" ${e.pad_modes[i] === id ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></div>`).join("")}</div></div>`;
+  $("#padslots").innerHTML = html;
+  $$("#padslots select").forEach((sel) => sel.addEventListener("change", async () => {
+    e.pad_modes[+sel.dataset.slot] = sel.value;
+    await saveSettings();
+    renderPadSlots();
+  }));
+}
+
+function renderLearn() {
+  const list = S.settings.engine.custom;
+  const rows = list.map((c, i) => {
+    const ctl = { kind: c.kind, side: c.side };
+    return `<div class="learnrow">
+      <input type="text" data-c="${i}" data-f="label" value="${esc(c.label)}">
+      <code>${hex(c.status)} ${hex(c.data1)}</code>
+      <select data-c="${i}" data-f="kind">${["button", "knob", "encoder"].map((k) => `<option ${c.kind === k ? "selected" : ""}>${k}</option>`).join("")}</select>
+      <select data-c="${i}" data-f="side"><option value="" ${!c.side ? "selected" : ""}>No deck</option><option value="left" ${c.side === "left" ? "selected" : ""}>Left deck</option><option value="right" ${c.side === "right" ? "selected" : ""}>Right deck</option></select>
+      <select data-c="${i}" data-f="action">${optionsHTML(ctl, c.action, "")}</select>
+      <button class="btn ghost small danger" data-del="${i}">Remove</button></div>`;
+  }).join("");
+  $("#learn").innerHTML = `<div class="mapsec"><h2>MIDI Learn</h2>
+    <div class="learnbar ${S.learning ? "listening" : ""}"><div class="grow">${S.learning
+      ? "<b>Listening…</b> press or move the control on your controller now."
+      : "Map anything RekordJog doesn't know yet: press <b>Learn</b>, then touch the control. Controls listed below can be changed directly in their row."}</div>
+      <button class="btn ${S.learning ? "ghost" : "primary"} small" id="learn-btn">${S.learning ? "Cancel" : "Learn"}</button></div>
+    ${list.length ? `<div class="maptable" style="margin-top:10px">${rows}</div>` : ""}</div>`;
+  $("#learn-btn").onclick = () => { S.learning = !S.learning; renderLearn(); };
+  $$("#learn [data-c]").forEach((el) => el.addEventListener("change", async () => {
+    const c = list[+el.dataset.c], f = el.dataset.f;
+    c[f] = f === "side" ? (el.value || null) : el.value;
+    if (f === "kind" || f === "side") c.action = "none";
+    await saveSettings();
+    renderLearn();
+  }));
+  $$("#learn [data-del]").forEach((b) => b.addEventListener("click", async () => {
+    list.splice(+b.dataset.del, 1);
+    await saveSettings();
+    renderLearn();
+  }));
+}
+
+async function learnCaptured(msg, value) {
+  S.learning = false;
+  let [status, d1] = msg;
+  if ((status & 0xf0) === 0x80) status = 0x90 | (status & 0x0f);
+  const list = S.settings.engine.custom;
+  if (!list.some((c) => c.status === status && c.data1 === d1)) {
+    const cc = (status & 0xf0) === 0xb0;
+    const ch = status & 0x0f;
+    list.push({
+      label: `Control ${hex(status)} ${hex(d1)}`,
+      status, data1: d1,
+      kind: cc ? (value === 1 || value === 127 ? "encoder" : "knob") : "button",
+      side: ch === 0 || ch === 4 ? "left" : ch === 1 || ch === 5 ? "right" : null,
+      action: "none",
+    });
+    await saveSettings();
+    toast("Got it — now choose what it should do");
+  } else toast("That control is already in the list");
+  renderLearn();
+}
+
 function renderMapping() {
+  renderPadSlots();
+  renderLearn();
   const sections = {};
   for (const c of S.catalog.controls) (sections[c.section] ??= []).push(c);
   const order = ["Left deck", "Mixer & browser", "Right deck"];
@@ -319,17 +456,14 @@ function renderMapping() {
         continue;
       }
       const cur = S.bindings[c.id] ?? c.default_action;
-      const groups = {};
-      for (const a of actionsFor(c)) (groups[a.group] ??= []).push(a);
-      const opts = Object.entries(groups).map(([g, as]) =>
-        `<optgroup label="${esc(g)}">${as.map((a) => `<option value="${esc(a.id)}" ${a.id === cur ? "selected" : ""}>${esc(a.label)}${a.id === c.default_action ? " (default)" : ""}</option>`).join("")}</optgroup>`).join("");
+      const opts = optionsHTML(c, cur, c.default_action);
       html += `<div class="maprow ${cur !== c.default_action ? "changed" : ""}" data-control="${esc(c.id)}">
         <div class="lbl">${esc(c.label)}</div><select data-bind="${esc(c.id)}">${opts}</select></div>`;
     }
     html += `</div></div>`;
   }
   $("#mapping").innerHTML = html;
-  $$("#mapping select").forEach((sel) => sel.addEventListener("change", async () => {
+  $$("#mapping select[data-bind]").forEach((sel) => sel.addEventListener("change", async () => {
     const id = sel.dataset.bind;
     const control = S.catalog.controls.find((c) => c.id === id);
     if (sel.value === control.default_action) delete S.settings.engine.bindings[id];
@@ -346,7 +480,7 @@ function renderCheats() {
   };
   const items = [
     ["Shift", "Hold <kbd>MODE</kbd> for a second — buttons then do their second function."],
-    ["Pad modes", "Tap <kbd>MODE</kbd>: Hot Cue → Loops → FX → Sampler, same as the lights on the controller."],
+    ["Pad modes", "Tap <kbd>MODE</kbd>: " + S.settings.engine.pad_modes.filter((m) => m !== "off").map((m) => (S.catalog.pad_modes.find(([id]) => id === m) || [m, m])[1]).join(" → ") + ". Change the order under Mapping."],
     ["Loops mode", "Pads make 1, 2, 4 and 8-beat loops. Press the lit pad again (or Shift + any pad) to exit the loop."],
     ["Jog wheels", "Touch the top and move to scratch (vinyl mode), turn the edge to nudge. Shift + jog = fast search."],
     ["Acapel / Shift", `${b("left.acapel")} · ${b("left.acapel_shift")}`],
@@ -383,6 +517,9 @@ function renderSettings() {
   bindToggle("#s-knob-filter", () => e.knob_default_filter, (v) => (e.knob_default_filter = v));
   bindToggle("#s-tray", () => S.settings.keep_running_in_tray, (v) => (S.settings.keep_running_in_tray = v));
   bindToggle("#s-login", () => S.settings.launch_at_login, (v) => (S.settings.launch_at_login = v));
+  bindToggle("#s-autoupdate", () => S.settings.auto_update, (v) => (S.settings.auto_update = v));
+  $("#upd-check").onclick = () => { invoke("check_updates"); toast("Checking for updates…"); };
+  $("#upd-install").onclick = () => { invoke("install_update"); toast("Installing — RekordJog will restart"); };
   renderPortSelect();
 }
 
@@ -549,7 +686,7 @@ function renderWizardLive() {
 // ---------------------------------------------------------------------------
 function mockInvoke(cmd, args) {
   const M = (window.__mock ??= {
-    settings: { engine: { scratch_sensitivity: 1, bend_sensitivity: 1, invert_tempo: true, invert_browse: false, vinyl_default: true, knob_default_filter: true, fadefx_depth: 0.8, bindings: {} }, setup_done: !location.hash.includes("wizard"), controller_port: null, keep_running_in_tray: true, launch_at_login: false },
+    settings: { engine: { scratch_sensitivity: 1, bend_sensitivity: 1, invert_tempo: true, invert_browse: false, vinyl_default: true, knob_default_filter: true, fadefx_depth: 0.8, bindings: {}, pad_modes: ["hot_cue", "loops", "pad_fx1", "sampler", "pad_fx2"], custom: [{ label: "Bluetooth button", status: 0x9f, data1: 0x30, kind: "button", side: null, action: "ddj:SortBPM" }] }, auto_update: true, setup_done: !location.hash.includes("wizard"), controller_port: null, keep_running_in_tray: true, launch_at_login: false },
     seq: 1, t: 0,
   });
   const cats = { controls: [], actions: [] };
@@ -583,7 +720,8 @@ function mockInvoke(cmd, args) {
       events: ev,
       log: [],
       platform: location.hash.includes("win") ? "windows" : "macos",
-      version: "2.0.0",
+      version: "2.0.2",
+      update: { state: "ready", current: "2.0.2", latest: "2.0.3", waiting_for: "rekordbox is open — it installs once you close rekordbox" },
     });
   }
   return Promise.resolve(null);

@@ -40,6 +40,7 @@
       <main class="content">
         <!-- STATUS -->
         <div class="view" id="view-status">
+          <div class="updstrip hidden" id="updstrip"></div>
           <div class="banner" id="banner"></div>
           <div class="decks" id="decks"></div>
           <h2>System check</h2>
@@ -62,8 +63,19 @@
               <h1>Mapping</h1>
               <p class="muted">Every control is already mapped to rekordbox. Change anything you like — it applies instantly. Tip: move a control on your Mixtrack Go and its row lights up.</p>
             </div>
-            <button class="btn ghost" id="map-reset">Reset to defaults</button>
+            <div class="row gap">
+              <button class="btn ghost" id="map-export">Export</button>
+              <button class="btn ghost" id="map-import">Import</button>
+              <button class="btn ghost" id="map-reset">Reset to defaults</button>
+            </div>
           </div>
+          <div class="card import hidden" id="import-box">
+            <b>Paste an exported mapping</b>
+            <textarea id="import-text" spellcheck="false" placeholder='{"bindings": …}'></textarea>
+            <div class="row gap"><button class="btn primary small" id="import-apply">Apply</button><button class="btn ghost small" id="import-cancel">Cancel</button></div>
+          </div>
+          <div id="padslots"></div>
+          <div id="learn"></div>
           <div id="mapping"></div>
         </div>
 
@@ -86,6 +98,11 @@
             <h3>Controller port</h3>
             <label class="field"><span>Which MIDI device is your Mixtrack Go?</span>
               <select id="s-port"></select></label>
+            <h3>Updates</h3>
+            <label class="toggle"><input type="checkbox" id="s-autoupdate"><span>Keep RekordJog up to date automatically (installs only while rekordbox is closed)</span></label>
+            <div class="row gap upd"><span class="muted" id="upd-status">…</span><span class="grow"></span>
+              <button class="btn ghost small" id="upd-check">Check now</button>
+              <button class="btn primary small hidden" id="upd-install">Restart &amp; update</button></div>
             <h3>App</h3>
             <label class="toggle"><input type="checkbox" id="s-tray"><span>Keep running in the menu bar / tray when the window is closed</span></label>
             <label class="toggle"><input type="checkbox" id="s-login"><span>Start RekordJog when I log in</span></label>

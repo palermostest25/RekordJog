@@ -13,6 +13,9 @@ pub struct Settings {
     /// Closing the window keeps RekordJog running in the tray/menu bar.
     pub keep_running_in_tray: bool,
     pub launch_at_login: bool,
+    /// Check for, download and install new versions automatically
+    /// (installs only while rekordbox is closed).
+    pub auto_update: bool,
 }
 
 impl Default for Settings {
@@ -23,6 +26,7 @@ impl Default for Settings {
             controller_port: None,
             keep_running_in_tray: true,
             launch_at_login: false,
+            auto_update: true,
         }
     }
 }

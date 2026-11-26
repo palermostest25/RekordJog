@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::ddj::{self, AppAction, Target, PAD_MODES};
+use crate::ddj::{self, AppAction, PadMode, Target};
 use crate::mixtrack::{self as mt, Control, LED_BRIGHT, LED_DIM, LED_OFF};
 use crate::{Kind, Side};
 use serde::Serialize;
@@ -45,6 +45,8 @@ impl Out {
 pub struct UiEvent {
     pub id: String,
     pub value: u8,
+    /// The raw message (for MIDI Learn).
+    pub msg: [u8; 3],
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -109,6 +111,9 @@ impl Default for Deck {
 
 pub struct Engine {
     cfg: Config,
+    /// Pad modes in MODE-button order, with the mode lights for each.
+    cycle: Vec<(PadMode, &'static [usize])>,
+    last_msg: [u8; 3],
     controls: Vec<Control>,
     targets: Vec<Target>,
     input_map: HashMap<(u8, u8), usize>,
@@ -146,6 +151,8 @@ impl Engine {
         let controls = mt::controls();
         let n = controls.len();
         let mut e = Engine {
+            cycle: Vec::new(),
+            last_msg: [0; 3],
             vinyl: cfg.vinyl_default,
             knob_filter: cfg.knob_default_filter,
             cfg,
@@ -187,6 +194,14 @@ impl Engine {
     }
 
     fn binding_for(&self, c: &Control) -> String {
+        if c.id.starts_with("custom.") {
+            if let Some(cc) = self.cfg.custom.iter().find(|x| x.id() == c.id) {
+                if Self::valid_binding(c, &cc.action) {
+                    return cc.action.clone();
+                }
+            }
+            return "none".into();
+        }
         match self.cfg.bindings.get(&c.id) {
             Some(id) if Self::valid_binding(c, id) => id.clone(),
             _ => c.default_action.to_string(),
@@ -200,7 +215,61 @@ impl Engine {
         }
     }
 
+    /// Messages with built-in behaviour (jog, tempo, touch, pads, mode).
+    fn is_special(status: u8, d1: u8) -> bool {
+        let (kind, ch) = (status & 0xF0, status & 0x0F);
+        if ch < 2 {
+            (kind == 0xB0 && matches!(d1, mt::JOG_CC | mt::JOG_SHIFT_CC | mt::TEMPO_MSB_CC | mt::TEMPO_LSB_CC))
+                || (kind == 0x90 && matches!(d1, mt::TOUCH_NOTE | mt::SHIFT_NOTE))
+        } else if ch == mt::PAD_CHANNEL_BASE || ch == mt::PAD_CHANNEL_BASE + 1 {
+            kind == 0x90
+                && (d1 == mt::MODE_NOTE
+                    || (mt::PAD_NOTE_BASE..mt::PAD_NOTE_BASE + 4).contains(&d1)
+                    || (mt::PAD_SHIFT_NOTE_BASE..mt::PAD_SHIFT_NOTE_BASE + 4).contains(&d1))
+        } else {
+            false
+        }
+    }
+
     fn rebuild(&mut self) {
+        // pad mode cycle
+        self.cycle = ddj::PAD_SLOTS
+            .iter()
+            .zip(self.cfg.pad_modes.iter())
+            .filter_map(|((_, leds), id)| ddj::pad_mode(id).map(|m| (*m, *leds)))
+            .collect();
+        if self.cycle.is_empty() {
+            self.cycle.push((ddj::PAD_MODE_KINDS[0], ddj::PAD_SLOTS[0].1));
+        }
+        for d in self.decks.iter_mut() {
+            if d.pad_mode >= self.cycle.len() {
+                d.pad_mode = 0;
+            }
+        }
+        // built-in controls + MIDI Learn controls
+        let mut controls = mt::controls();
+        for c in &self.cfg.custom {
+            let key = (c.status, c.data1);
+            if controls.iter().any(|x| (x.status, x.data1) == key) || Self::is_special(c.status, c.data1) {
+                continue;
+            }
+            controls.push(Control {
+                id: c.id(),
+                label: c.label.clone(),
+                section: "MIDI Learn".into(),
+                kind: c.kind,
+                side: c.side,
+                status: c.status,
+                data1: c.data1,
+                led: if c.kind == Kind::Button { Some(key) } else { None },
+                default_action: "none",
+            });
+        }
+        let n = controls.len();
+        self.controls = controls;
+        self.targets = vec![Target::None; n];
+        self.led_on.resize(n, false);
+        self.last_value.resize(n, None);
         self.input_map.clear();
         self.led_map.clear();
         for i in 0..self.controls.len() {
@@ -254,7 +323,7 @@ impl Engine {
         let mut out = Vec::new();
         for d in 0..2u8 {
             out.push(Out::rb(&[0x90 | d, ddj::VINYL_STATE, if self.vinyl { 0x7F } else { 0 }]));
-            if let Some(note) = PAD_MODES[self.decks[d as usize].pad_mode].mode_note {
+            if let Some(note) = self.cycle[self.decks[d as usize].pad_mode].0.mode_note {
                 out.push(Out::rb(&[0x90 | d, note, 0x7F]));
                 out.push(Out::rb(&[0x90 | d, note, 0x00]));
             }
@@ -300,7 +369,7 @@ impl Engine {
         let deck = |d: usize| {
             let k = &self.decks[d];
             DeckSnapshot {
-                pad_mode: PAD_MODES[k.pad_mode].name,
+                pad_mode: self.cycle[k.pad_mode].0.name,
                 touched: k.touched,
                 playing: k.playing,
                 tempo: if k.tempo_seen {
@@ -325,7 +394,8 @@ impl Engine {
         if self.events.len() >= MAX_EVENTS {
             self.events.pop_front();
         }
-        self.events.push_back(UiEvent { id, value });
+        let msg = self.last_msg;
+        self.events.push_back(UiEvent { id, value, msg });
     }
 
     // ------------------------------------------------------------------
@@ -339,6 +409,7 @@ impl Engine {
         }
         self.controller_messages += 1;
         let (status, d1, d2) = (bytes[0], bytes[1], bytes[2]);
+        self.last_msg = [status, d1, d2];
         let kind = status & 0xF0;
         let ch = status & 0x0F;
         let is_note = kind == 0x80 || kind == 0x90;
@@ -421,6 +492,8 @@ impl Engine {
                 Kind::Encoder => self.apply_encoder(i, value, &mut out),
                 Kind::Fixed => {}
             }
+        } else {
+            self.event("unmapped".into(), value);
         }
         out
     }
@@ -456,6 +529,7 @@ impl Engine {
     fn apply_knob(&mut self, i: usize, v: u8, out: &mut Vec<Out>) {
         match self.targets[i] {
             Target::HiRes { status, cc } => hires(status, cc, ddj::to_hires(v), out),
+            Target::Cc { status, cc } => out.push(Out::rb(&[status, cc, v & 0x7F])),
             Target::Crossfader => {
                 hires(ddj::MIXER_STATUS_CC, ddj::CROSSFADER, ddj::to_hires(v), out);
                 if self.fadefx {
@@ -545,16 +619,17 @@ impl Engine {
     }
 
     fn pad(&mut self, d: usize, p: usize, shifted: bool, pressed: bool, out: &mut Vec<Out>) {
-        if PAD_MODES[self.decks[d].pad_mode].beat_loop {
+        if self.cycle[self.decks[d].pad_mode].0.beat_loop {
             if pressed {
                 self.beat_loop_pad(d, p, shifted, out);
             }
             return;
         }
         let status = 0x90 | (ddj::PAD_CHANNEL_BASE + d as u8);
+        let base = self.cycle[self.decks[d].pad_mode].0.base;
         let deck = &mut self.decks[d];
         if pressed {
-            let note = PAD_MODES[deck.pad_mode].base + p as u8 + if shifted { 8 } else { 0 };
+            let note = base + p as u8 + if shifted { 8 } else { 0 };
             if let Some(prev) = deck.pad_down[p].replace(note) {
                 if prev != note {
                     out.push(Out::rb(&[status, prev, 0]));
@@ -611,9 +686,9 @@ impl Engine {
             }
         }
         let deck = &mut self.decks[d];
-        deck.pad_mode = (deck.pad_mode + 1) % PAD_MODES.len();
+        deck.pad_mode = (deck.pad_mode + 1) % self.cycle.len();
         // Switch rekordbox's on-screen pad mode too (Loops is ours, no switch).
-        if let Some(note) = PAD_MODES[deck.pad_mode].mode_note {
+        if let Some(note) = self.cycle[self.decks[d].pad_mode].0.mode_note {
             out.push(Out::rb(&[0x90 | d as u8, note, 0x7F]));
             out.push(Out::rb(&[0x90 | d as u8, note, 0x00]));
         }
@@ -721,7 +796,7 @@ impl Engine {
             let d = ch as usize;
             if self.decks[d].loop_active != on {
                 self.decks[d].loop_active = on;
-                if PAD_MODES[self.decks[d].pad_mode].beat_loop {
+                if self.cycle[self.decks[d].pad_mode].0.beat_loop {
                     self.paint_pads(d, &mut out);
                 }
             }
@@ -729,7 +804,7 @@ impl Engine {
         if ch == ddj::PAD_CHANNEL_BASE || ch == ddj::PAD_CHANNEL_BASE + 1 {
             let d = (ch - ddj::PAD_CHANNEL_BASE) as usize;
             self.decks[d].pad_leds[d1 as usize & 0x7F] = value;
-            let mode = PAD_MODES[self.decks[d].pad_mode];
+            let mode = self.cycle[self.decks[d].pad_mode].0;
             let base = mode.base;
             if !mode.beat_loop && d1 >= base && d1 < base + 16 {
                 let offset = d1 - base;
@@ -788,9 +863,9 @@ impl Engine {
 
     fn paint_pads(&mut self, d: usize, out: &mut Vec<Out>) {
         let side = Side::from_idx(d);
-        let mode = PAD_MODES[self.decks[d].pad_mode];
+        let (mode, leds) = self.cycle[self.decks[d].pad_mode];
         for m in 0..4 {
-            let v = if mode.leds.contains(&m) { LED_BRIGHT } else { LED_DIM };
+            let v = if leds.contains(&m) { LED_BRIGHT } else { LED_DIM };
             self.led(mt::mode_led(side, m), v, out);
         }
         for p in 0..4 {
@@ -979,10 +1054,85 @@ mod tests {
         assert!(rb(&out).contains(&vec![0x90, 0x1E, 0x7F]));
         assert!(ctl(&out).contains(&vec![0x94, 0x03, LED_BRIGHT]));
         assert_eq!(rb(&e.on_controller(&[0x94, 0x14, 0x7F])), vec![vec![0x97, 0x10, 0x7F]]);
-        // -> Sampler -> back to Hot Cue
+        // -> Sampler -> STEMS light = Pad FX 2 -> back to Hot Cue
         assert!(rb(&e.on_controller(&[0x94, 0x00, 0x7F])).contains(&vec![0x90, 0x22, 0x7F]));
+        let out = e.on_controller(&[0x94, 0x00, 0x7F]);
+        assert!(rb(&out).contains(&vec![0x90, 0x6B, 0x7F]));
+        assert!(ctl(&out).contains(&vec![0x94, 0x04, LED_BRIGHT]), "STEMS light");
+        assert_eq!(rb(&e.on_controller(&[0x94, 0x14, 0x7F])), vec![vec![0x97, 0x50, 0x7F]]);
         assert!(rb(&e.on_controller(&[0x94, 0x00, 0x7F])).contains(&vec![0x90, 0x1B, 0x7F]));
         assert_eq!(e.snapshot().decks[0].pad_mode, "Hot Cue");
+    }
+
+    #[test]
+    fn pad_slots_are_configurable() {
+        let mut cfg = Config::default();
+        cfg.pad_modes = vec!["hot_cue".into(), "off".into(), "beat_jump".into(), "off".into(), "slicer".into()];
+        let mut e = Engine::new(cfg);
+        let out = e.on_controller(&[0x94, 0x00, 0x7F]);
+        assert!(rb(&out).contains(&vec![0x90, 0x69, 0x7F]), "beat jump on the FX slot");
+        assert!(ctl(&out).contains(&vec![0x94, 0x02, LED_BRIGHT]) && ctl(&out).contains(&vec![0x94, 0x03, LED_BRIGHT]));
+        assert_eq!(rb(&e.on_controller(&[0x94, 0x15, 0x7F])), vec![vec![0x97, 0x41, 0x7F]]);
+        assert!(rb(&e.on_controller(&[0x94, 0x00, 0x7F])).contains(&vec![0x90, 0x20, 0x7F]), "slicer on STEMS");
+        assert_eq!(e.snapshot().decks[0].pad_mode, "Slicer");
+        // shrinking the cycle keeps the deck on a valid mode
+        let mut cfg = Config::default();
+        cfg.pad_modes = vec!["off".into(), "off".into(), "off".into(), "off".into(), "off".into()];
+        e.set_config(cfg);
+        assert_eq!(e.snapshot().decks[0].pad_mode, "Hot Cue");
+    }
+
+    #[test]
+    fn every_rekordbox_function_is_mappable() {
+        let all = ddj::actions();
+        assert!(all.len() > 250, "only {} actions", all.len());
+        assert_eq!(ddj::resolve("ddj:PlayPause", Some(Side::Right)), Some(Target::Note { status: 0x91, note: 0x0B, led: Some((0x91, 0x0B)) }));
+        assert_eq!(ddj::resolve("ddj:PAD1.HotCue.Call", Some(Side::Right)), Some(Target::Note { status: 0x98, note: 0x00, led: Some((0x98, 0x00)) }));
+        assert_eq!(ddj::resolve("ddj:Load", Some(Side::Right)), Some(Target::Note { status: 0x96, note: 0x47, led: None }));
+        assert_eq!(ddj::resolve("ddj:Load1+Shift", None), Some(Target::Note { status: 0x96, note: 0x58, led: Some((0x96, 0x58)) }));
+        assert_eq!(ddj::resolve("ddj:CrossFaderCurve", None), Some(Target::HiRes { status: 0xB6, cc: 0x01 }));
+        assert_eq!(ddj::resolve("ddj:SamplerVolume+Shift", None), Some(Target::Cc { status: 0xB6, cc: 0x69 }));
+        assert_eq!(ddj::resolve("ddj:Browse", None), Some(Target::Rotary { status: 0xB6, cc: 0x40 }));
+        assert_eq!(ddj::resolve("ddj:PlayPause", None), None, "per-deck needs a deck");
+        assert!(all.iter().all(|a| !a.id.contains("Shift,") && !a.label.is_empty()));
+        // a control bound to one of them
+        let mut cfg = Config::default();
+        cfg.bindings.insert("main_level".into(), "ddj:SamplerVolume".into());
+        cfg.bindings.insert("left.acapel".into(), "ddj:Slip".into());
+        let mut e = Engine::new(cfg);
+        assert_eq!(rb(&e.on_controller(&[0xBF, 0x0A, 127])), vec![vec![0xB6, 0x03, 127], vec![0xB6, 0x23, 127]]);
+        assert_eq!(rb(&e.on_controller(&[0x90, 0x46, 0x7F])), vec![vec![0x90, 0x40, 0x7F]]);
+        assert_eq!(ctl(&e.on_rekordbox(&[0x90, 0x40, 0x7F])), vec![vec![0x90, 0x46, LED_BRIGHT]]);
+    }
+
+    #[test]
+    fn midi_learn_custom_controls() {
+        let mut e = engine();
+        e.drain_events();
+        // unknown message is reported for learning
+        assert!(e.on_controller(&[0x9F, 0x30, 0x7F]).is_empty());
+        let ev = e.drain_events();
+        assert_eq!(ev.last().unwrap().id, "unmapped");
+        assert_eq!(ev.last().unwrap().msg, [0x9F, 0x30, 0x7F]);
+        // map it
+        let mut cfg = Config::default();
+        cfg.custom.push(crate::config::CustomControl {
+            label: "Mystery button".into(),
+            status: 0x8F, // stored from a note-off: normalised
+            data1: 0x30,
+            kind: Kind::Button,
+            side: Some(Side::Right),
+            action: "keylock".into(),
+        });
+        // trying to learn over a jog wheel is ignored
+        cfg.custom.push(crate::config::CustomControl {
+            label: "jog".into(), status: 0xB0, data1: 0x06, kind: Kind::Knob, side: None, action: "crossfader".into(),
+        });
+        e.set_config(cfg);
+        assert_eq!(rb(&e.on_controller(&[0x9F, 0x30, 0x7F])), vec![vec![0x91, 0x1A, 0x7F]]);
+        assert_eq!(rb(&e.on_controller(&[0x8F, 0x30, 0x00])), vec![vec![0x91, 0x1A, 0x00]]);
+        assert_eq!(rb(&e.on_controller(&[0xB0, 0x06, 0x01]))[0][1], ddj::WHEEL_PITCH_BEND);
+        assert_eq!(e.binding("custom.9f30").as_deref(), Some("keylock"));
     }
 
     #[test]
