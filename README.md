@@ -69,7 +69,8 @@ SHIFT = hold **MODE**. The controller handles SHIFT itself.
 | Acapel | 4-beat auto loop | Loop ÷2 |
 | Instru | Beat FX on/off (left = FX1, right = FX2) | Loop ×2 |
 | Headphone cue | Headphone cue | Tap BPM |
-| MODE (tap) | Pad mode: Hot Cue → Beat Jump → Pad FX → Sampler → Pad FX 2 | – |
+| MODE (tap) | Pad mode, matching the controller's lights: Hot Cue → Loops → FX (rekordbox Pad FX) → Sampler | – |
+| Pads in Loops mode | 1, 2, 4, 8-beat loop; press the lit pad again to exit | Exit loop |
 | Pads 1–4 | Follow the pad mode, with LEDs | Shift functions (for example, delete hot cue) |
 | Level knob | Channel fader | – |
 | Filter/Low knob | Color FX filter (or Low EQ) | – |

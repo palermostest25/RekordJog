@@ -33,25 +33,36 @@ pub const LOADED_INDICATOR_STATUS: u8 = 0x9B;
 pub const HIRES_CENTER: u16 = 8192;
 pub const HIRES_MAX: u16 = 16383;
 
-/// Pad modes cycled by the MODE button. `leds` are indices into the
-/// Mixtrack Go mode indicator LEDs (0 HOT CUE, 1 LOOPS, 2 SAMPLER, 3 STEMS).
+/// Pad modes cycled by the MODE button, in the same order as the Mixtrack
+/// Go's mode lights. `leds` are indices into its mode indicator LEDs
+/// (0 HOT CUE, 1 LOOPS, 2 SAMPLER, 3 STEMS; FX = LOOPS + SAMPLER).
 #[derive(Clone, Copy, Debug)]
 pub struct PadMode {
     pub name: &'static str,
     /// first DDJ-SX pad note for this mode; +8 is the shifted pad
     pub base: u8,
-    /// DDJ-SX pad mode button note (deck channel)
-    pub mode_note: u8,
+    /// DDJ-SX pad mode button note (deck channel) that switches rekordbox
+    /// to the same mode. `None` for modes RekordJog handles itself.
+    pub mode_note: Option<u8>,
+    /// Pads make 1/2/4/8-beat loops (handled by RekordJog, because the
+    /// DDJ-SX profile in rekordbox has no beat-loop pad mode).
+    pub beat_loop: bool,
     pub leds: &'static [usize],
 }
 
 pub const PAD_MODES: &[PadMode] = &[
-    PadMode { name: "Hot Cue", base: 0x00, mode_note: 0x1B, leds: &[0] },
-    PadMode { name: "Beat Jump", base: 0x40, mode_note: 0x69, leds: &[1] },
-    PadMode { name: "Pad FX", base: 0x10, mode_note: 0x1E, leds: &[1, 2] },
-    PadMode { name: "Sampler", base: 0x30, mode_note: 0x22, leds: &[2] },
-    PadMode { name: "Pad FX 2", base: 0x50, mode_note: 0x6B, leds: &[3] },
+    PadMode { name: "Hot Cue", base: 0x00, mode_note: Some(0x1B), beat_loop: false, leds: &[0] },
+    PadMode { name: "Loops", base: 0x00, mode_note: None, beat_loop: true, leds: &[1] },
+    PadMode { name: "Pad FX", base: 0x10, mode_note: Some(0x1E), beat_loop: false, leds: &[1, 2] },
+    PadMode { name: "Sampler", base: 0x30, mode_note: Some(0x22), beat_loop: false, leds: &[2] },
 ];
+
+// Loop buttons on the deck channel
+pub const AUTO_LOOP: u8 = 0x14;
+pub const LOOP_HALF: u8 = 0x12;
+pub const LOOP_DOUBLE: u8 = 0x13;
+/// Loop sizes are tracked as log2(beats); rekordbox starts auto loops at 4 beats.
+pub const DEFAULT_LOOP_LOG2: i8 = 2;
 
 /// Behaviours handled by RekordJog itself rather than by rekordbox.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

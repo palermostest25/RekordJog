@@ -346,7 +346,8 @@ function renderCheats() {
   };
   const items = [
     ["Shift", "Hold <kbd>MODE</kbd> for a second — buttons then do their second function."],
-    ["Pad modes", "Tap <kbd>MODE</kbd>: Hot Cue → Beat Jump → Pad FX → Sampler → Pad FX 2."],
+    ["Pad modes", "Tap <kbd>MODE</kbd>: Hot Cue → Loops → FX → Sampler, same as the lights on the controller."],
+    ["Loops mode", "Pads make 1, 2, 4 and 8-beat loops. Press the lit pad again (or Shift + any pad) to exit the loop."],
     ["Jog wheels", "Touch the top and move to scratch (vinyl mode), turn the edge to nudge. Shift + jog = fast search."],
     ["Acapel / Shift", `${b("left.acapel")} · ${b("left.acapel_shift")}`],
     ["Instru / Shift", `${b("left.instru")} · ${b("left.instru_shift")}`],

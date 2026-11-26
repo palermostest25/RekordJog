@@ -81,6 +81,10 @@ struct Deck {
     /// last LED value rekordbox sent per DDJ-SX pad note
     pad_leds: [u8; 128],
     playing: bool,
+    /// rekordbox reports an auto loop is running
+    loop_active: bool,
+    /// current auto-loop length as log2(beats)
+    loop_log2: i8,
 }
 
 impl Default for Deck {
@@ -97,6 +101,8 @@ impl Default for Deck {
             pad_down: [None; 4],
             pad_leds: [0; 128],
             playing: false,
+            loop_active: false,
+            loop_log2: ddj::DEFAULT_LOOP_LOG2,
         }
     }
 }
@@ -248,9 +254,10 @@ impl Engine {
         let mut out = Vec::new();
         for d in 0..2u8 {
             out.push(Out::rb(&[0x90 | d, ddj::VINYL_STATE, if self.vinyl { 0x7F } else { 0 }]));
-            let mode = PAD_MODES[self.decks[d as usize].pad_mode];
-            out.push(Out::rb(&[0x90 | d, mode.mode_note, 0x7F]));
-            out.push(Out::rb(&[0x90 | d, mode.mode_note, 0x00]));
+            if let Some(note) = PAD_MODES[self.decks[d as usize].pad_mode].mode_note {
+                out.push(Out::rb(&[0x90 | d, note, 0x7F]));
+                out.push(Out::rb(&[0x90 | d, note, 0x00]));
+            }
             if self.decks[d as usize].tempo_seen {
                 self.send_tempo(d as usize, &mut out);
             }
@@ -422,6 +429,14 @@ impl Engine {
         match self.targets[i] {
             Target::Note { status, note, led } => {
                 out.push(Out::rb(&[status, note, if pressed { 0x7F } else { 0x00 }]));
+                if pressed && status & 0xF0 == 0x90 && (status & 0x0F) < 2 {
+                    let deck = &mut self.decks[(status & 0x0F) as usize];
+                    match note {
+                        ddj::LOOP_HALF => deck.loop_log2 = (deck.loop_log2 - 1).max(-5),
+                        ddj::LOOP_DOUBLE => deck.loop_log2 = (deck.loop_log2 + 1).min(5),
+                        _ => {}
+                    }
+                }
                 if led.is_none() {
                     // no feedback from rekordbox: light while held
                     if let Some(addr) = self.controls[i].led {
@@ -530,6 +545,12 @@ impl Engine {
     }
 
     fn pad(&mut self, d: usize, p: usize, shifted: bool, pressed: bool, out: &mut Vec<Out>) {
+        if PAD_MODES[self.decks[d].pad_mode].beat_loop {
+            if pressed {
+                self.beat_loop_pad(d, p, shifted, out);
+            }
+            return;
+        }
         let status = 0x90 | (ddj::PAD_CHANNEL_BASE + d as u8);
         let deck = &mut self.decks[d];
         if pressed {
@@ -545,6 +566,42 @@ impl Engine {
         }
     }
 
+    fn toggle_auto_loop(d: usize, out: &mut Vec<Out>) {
+        out.push(Out::rb(&[0x90 | d as u8, ddj::AUTO_LOOP, 0x7F]));
+        out.push(Out::rb(&[0x90 | d as u8, ddj::AUTO_LOOP, 0x00]));
+    }
+
+    /// Loops mode: pads 1-4 = 1, 2, 4, 8-beat loops. Pressing the pad of the
+    /// running loop (or any pad with SHIFT) exits the loop. Sizes are set
+    /// with rekordbox's loop ½ / ×2 controls, then the auto loop engages.
+    fn beat_loop_pad(&mut self, d: usize, p: usize, shifted: bool, out: &mut Vec<Out>) {
+        let target = p as i8; // log2 of 1, 2, 4, 8 beats
+        let st = 0x90 | d as u8;
+        let deck = &mut self.decks[d];
+        if shifted || (deck.loop_active && deck.loop_log2 == target) {
+            if deck.loop_active {
+                Self::toggle_auto_loop(d, out);
+                deck.loop_active = false;
+            }
+        } else {
+            while deck.loop_log2 > target {
+                out.push(Out::rb(&[st, ddj::LOOP_HALF, 0x7F]));
+                out.push(Out::rb(&[st, ddj::LOOP_HALF, 0x00]));
+                deck.loop_log2 -= 1;
+            }
+            while deck.loop_log2 < target {
+                out.push(Out::rb(&[st, ddj::LOOP_DOUBLE, 0x7F]));
+                out.push(Out::rb(&[st, ddj::LOOP_DOUBLE, 0x00]));
+                deck.loop_log2 += 1;
+            }
+            if !deck.loop_active {
+                Self::toggle_auto_loop(d, out);
+                deck.loop_active = true;
+            }
+        }
+        self.paint_pads(d, out);
+    }
+
     fn next_pad_mode(&mut self, d: usize, out: &mut Vec<Out>) {
         // release held pads so nothing gets stuck in the old mode
         let status = 0x90 | (ddj::PAD_CHANNEL_BASE + d as u8);
@@ -555,9 +612,11 @@ impl Engine {
         }
         let deck = &mut self.decks[d];
         deck.pad_mode = (deck.pad_mode + 1) % PAD_MODES.len();
-        let mode = PAD_MODES[deck.pad_mode];
-        out.push(Out::rb(&[0x90 | d as u8, mode.mode_note, 0x7F]));
-        out.push(Out::rb(&[0x90 | d as u8, mode.mode_note, 0x00]));
+        // Switch rekordbox's on-screen pad mode too (Loops is ours, no switch).
+        if let Some(note) = PAD_MODES[deck.pad_mode].mode_note {
+            out.push(Out::rb(&[0x90 | d as u8, note, 0x7F]));
+            out.push(Out::rb(&[0x90 | d as u8, note, 0x00]));
+        }
         self.paint_pads(d, out);
     }
 
@@ -658,11 +717,21 @@ impl Engine {
         if ch < 2 && d1 == ddj::PLAY {
             self.decks[ch as usize].playing = on;
         }
+        if ch < 2 && d1 == ddj::AUTO_LOOP {
+            let d = ch as usize;
+            if self.decks[d].loop_active != on {
+                self.decks[d].loop_active = on;
+                if PAD_MODES[self.decks[d].pad_mode].beat_loop {
+                    self.paint_pads(d, &mut out);
+                }
+            }
+        }
         if ch == ddj::PAD_CHANNEL_BASE || ch == ddj::PAD_CHANNEL_BASE + 1 {
             let d = (ch - ddj::PAD_CHANNEL_BASE) as usize;
             self.decks[d].pad_leds[d1 as usize & 0x7F] = value;
-            let base = PAD_MODES[self.decks[d].pad_mode].base;
-            if d1 >= base && d1 < base + 16 {
+            let mode = PAD_MODES[self.decks[d].pad_mode];
+            let base = mode.base;
+            if !mode.beat_loop && d1 >= base && d1 < base + 16 {
                 let offset = d1 - base;
                 let (p, shifted) = ((offset % 8) as usize, offset >= 8);
                 if p < 4 {
@@ -726,8 +795,12 @@ impl Engine {
         }
         for p in 0..4 {
             for shifted in [false, true] {
-                let note = mode.base + p as u8 + if shifted { 8 } else { 0 };
-                let on = self.decks[d].pad_leds[note as usize] > 0;
+                let deck = &self.decks[d];
+                let on = if mode.beat_loop {
+                    !shifted && deck.loop_active && deck.loop_log2 == p as i8
+                } else {
+                    deck.pad_leds[(mode.base + p as u8 + if shifted { 8 } else { 0 }) as usize] > 0
+                };
                 self.led(mt::pad_led(side, p, shifted), if on { LED_BRIGHT } else { LED_OFF }, out);
             }
         }
@@ -894,13 +967,55 @@ mod tests {
         assert_eq!(rb(&e.on_controller(&[0x95, 0x1F, 0x7F])), vec![vec![0x98, 0x0B, 0x7F]]);
         // hot cue LED from rekordbox
         assert_eq!(ctl(&e.on_rekordbox(&[0x97, 0x01, 0x7F])), vec![vec![0x94, 0x15, 0x7F]]);
-        // MODE -> Beat Jump
+        // MODE -> Loops: rekordbox is NOT switched to another pad mode
         let out = e.on_controller(&[0x94, 0x00, 0x7F]);
-        assert!(rb(&out).contains(&vec![0x90, 0x69, 0x7F]));
+        assert!(rb(&out).is_empty(), "no rekordbox pad mode change: {:?}", rb(&out));
         assert!(ctl(&out).contains(&vec![0x94, 0x15, LED_OFF]), "hot cue LED cleared");
-        assert!(ctl(&out).contains(&vec![0x94, 0x02, LED_BRIGHT]));
-        assert_eq!(e.snapshot().decks[0].pad_mode, "Beat Jump");
-        assert_eq!(rb(&e.on_controller(&[0x94, 0x14, 0x7F])), vec![vec![0x97, 0x40, 0x7F]]);
+        assert!(ctl(&out).contains(&vec![0x94, 0x02, LED_BRIGHT]), "LOOPS light on");
+        assert!(ctl(&out).contains(&vec![0x94, 0x01, LED_DIM]), "HOT CUE light off");
+        assert_eq!(e.snapshot().decks[0].pad_mode, "Loops");
+        // MODE -> FX (LOOPS + SAMPLER lights) -> rekordbox Pad FX
+        let out = e.on_controller(&[0x94, 0x00, 0x7F]);
+        assert!(rb(&out).contains(&vec![0x90, 0x1E, 0x7F]));
+        assert!(ctl(&out).contains(&vec![0x94, 0x03, LED_BRIGHT]));
+        assert_eq!(rb(&e.on_controller(&[0x94, 0x14, 0x7F])), vec![vec![0x97, 0x10, 0x7F]]);
+        // -> Sampler -> back to Hot Cue
+        assert!(rb(&e.on_controller(&[0x94, 0x00, 0x7F])).contains(&vec![0x90, 0x22, 0x7F]));
+        assert!(rb(&e.on_controller(&[0x94, 0x00, 0x7F])).contains(&vec![0x90, 0x1B, 0x7F]));
+        assert_eq!(e.snapshot().decks[0].pad_mode, "Hot Cue");
+    }
+
+    #[test]
+    fn loops_mode_makes_beat_loops() {
+        let mut e = engine();
+        e.on_controller(&[0x95, 0x00, 0x7F]); // right deck -> Loops
+        // pad 1 = 1 beat: halve twice from the default 4, then engage
+        let out = e.on_controller(&[0x95, 0x14, 0x7F]);
+        assert_eq!(
+            rb(&out),
+            vec![
+                vec![0x91, 0x12, 0x7F], vec![0x91, 0x12, 0x00],
+                vec![0x91, 0x12, 0x7F], vec![0x91, 0x12, 0x00],
+                vec![0x91, 0x14, 0x7F], vec![0x91, 0x14, 0x00],
+            ]
+        );
+        assert!(ctl(&out).contains(&vec![0x95, 0x14, LED_BRIGHT]));
+        assert!(rb(&e.on_controller(&[0x85, 0x14, 0x00])).is_empty(), "release does nothing");
+        // pad 4 = 8 beats while looping: resize only
+        let out = rb(&e.on_controller(&[0x95, 0x17, 0x7F]));
+        assert_eq!(out.len(), 6);
+        assert!(out.iter().all(|m| m[1] == 0x13));
+        // same pad again exits the loop
+        assert_eq!(rb(&e.on_controller(&[0x95, 0x17, 0x7F])), vec![vec![0x91, 0x14, 0x7F], vec![0x91, 0x14, 0x00]]);
+        // rekordbox says a loop started elsewhere: LED follows
+        let out = e.on_rekordbox(&[0x91, 0x14, 0x7F]);
+        assert!(ctl(&out).contains(&vec![0x95, 0x17, LED_BRIGHT]));
+        // shift + pad exits
+        assert_eq!(rb(&e.on_controller(&[0x95, 0x1C, 0x7F])), vec![vec![0x91, 0x14, 0x7F], vec![0x91, 0x14, 0x00]]);
+        // loop ×2 button keeps the size in sync: 8 -> 16 beats, so pad 4 halves once
+        e.on_controller(&[0x91, 0x49, 0x7F]); // Shift+Instru = loop ×2
+        let out = rb(&e.on_controller(&[0x95, 0x17, 0x7F]));
+        assert_eq!(out[0], vec![0x91, 0x12, 0x7F]);
     }
 
     #[test]
