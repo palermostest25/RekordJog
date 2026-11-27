@@ -44,9 +44,25 @@ pub fn checks(s: &Status) -> Vec<Check> {
 
     // 1. Controller
     v.push(match (&s.controller, &s.controller_error) {
-        (Some(name), _) if s.controller_has_output => {
-            check("controller", State::Ok, "Mixtrack Go connected", format!("Using MIDI port “{name}”."), None)
-        }
+        (Some(name), _) if s.controller_has_output && s.controller_send_errors > 0 => check(
+            "controller",
+            State::Warn,
+            "Mixtrack Go connected, but its lights aren't receiving",
+            format!(
+                "Controls work, but {} message(s) to the controller's lights failed: {}. Unplug and replug the controller; \
+                 if it keeps happening, use “Copy diagnostics” on the MIDI monitor page and report it.",
+                s.controller_send_errors,
+                s.last_send_error.clone().unwrap_or_default()
+            ),
+            Some(Fix::Rescan { label: "Reconnect".into() }),
+        ),
+        (Some(name), _) if s.controller_has_output => check(
+            "controller",
+            State::Ok,
+            "Mixtrack Go connected",
+            format!("Using MIDI port “{name}”; lights via {}.", s.controller_outputs.iter().map(|n| format!("“{n}”")).collect::<Vec<_>>().join(", ")),
+            None,
+        ),
         (Some(name), _) => check(
             "controller",
             State::Warn,
@@ -251,6 +267,11 @@ pub fn report(s: &Status, checks: &[Check]) -> String {
         r.push_str(&format!("[{:?}] {} — {}\n", c.state, c.title, c.detail));
     }
     r.push_str(&format!("MIDI inputs: {:?}\n", s.midi_inputs));
+    r.push_str(&format!("MIDI outputs: {:?}\n", s.midi_outputs));
+    r.push_str(&format!(
+        "Controller: {:?}, light outputs: {:?}, sent {} message(s), {} failed, last error: {:?}\n",
+        s.controller, s.controller_outputs, s.controller_messages_sent, s.controller_send_errors, s.last_send_error
+    ));
     r.push_str(&format!("Virtual port: {:?}\n", s.vport));
     r.push_str(&format!(
         "rekordbox: installed={} version={:?} running={} linked={} mapping={:?}\n",

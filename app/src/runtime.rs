@@ -35,6 +35,13 @@ pub enum VportStatus {
 pub struct Status {
     pub controller: Option<String>,
     pub controller_has_output: bool,
+    /// MIDI outputs RekordJog sends the controller's LED messages to.
+    pub controller_outputs: Vec<String>,
+    /// Every MIDI output the OS reports.
+    pub midi_outputs: Vec<String>,
+    pub controller_messages_sent: u64,
+    pub controller_send_errors: u64,
+    pub last_send_error: Option<String>,
     pub controller_error: Option<String>,
     /// Every MIDI input the OS reports (for manual selection).
     pub midi_inputs: Vec<String>,
@@ -68,7 +75,7 @@ pub struct SeqEvent {
 
 pub struct Core {
     pub engine: Engine,
-    ctl_out: Option<MidiOutputConnection>,
+    ctl_out: Vec<(String, MidiOutputConnection)>,
     vport: Option<Box<dyn VirtualPort>>,
 }
 
@@ -86,6 +93,9 @@ pub struct Runtime {
     rb_linked: AtomicBool,
     needs_resync: AtomicBool,
     force_rescan: AtomicBool,
+    ctl_sent: AtomicU64,
+    ctl_errors: AtomicU64,
+    last_send_error: Mutex<Option<String>>,
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -104,7 +114,7 @@ pub fn looks_like_mixtrack_go(name: &str) -> bool {
 impl Runtime {
     pub fn new(settings: Settings) -> Arc<Runtime> {
         Arc::new(Runtime {
-            core: Mutex::new(Core { engine: Engine::new(settings.engine.clone()), ctl_out: None, vport: None }),
+            core: Mutex::new(Core { engine: Engine::new(settings.engine.clone()), ctl_out: Vec::new(), vport: None }),
             status: Mutex::new(Status::default()),
             settings: Mutex::new(settings),
             log: Mutex::new(VecDeque::new()),
@@ -117,6 +127,9 @@ impl Runtime {
             rb_linked: AtomicBool::new(false),
             needs_resync: AtomicBool::new(false),
             force_rescan: AtomicBool::new(false),
+            ctl_sent: AtomicU64::new(0),
+            ctl_errors: AtomicU64::new(0),
+            last_send_error: Mutex::new(None),
         })
     }
 
@@ -150,10 +163,21 @@ impl Runtime {
                     }
                 }
                 Dest::Controller => {
-                    if let Some(c) = core.ctl_out.as_mut() {
-                        let _ = c.send(&o.bytes);
-                        self.log(">ctl", &o.bytes);
+                    if core.ctl_out.is_empty() {
+                        continue;
                     }
+                    for (name, c) in core.ctl_out.iter_mut() {
+                        match c.send(&o.bytes) {
+                            Ok(()) => {
+                                self.ctl_sent.fetch_add(1, Ordering::Relaxed);
+                            }
+                            Err(e) => {
+                                self.ctl_errors.fetch_add(1, Ordering::Relaxed);
+                                *lock(&self.last_send_error) = Some(format!("{name}: {e} (message {})", hex(&o.bytes)));
+                            }
+                        }
+                    }
+                    self.log(">ctl", &o.bytes);
                 }
             }
         }
@@ -213,6 +237,9 @@ impl Runtime {
         s.seconds_since_controller_msg = ago(self.last_ctl_ms.load(Ordering::Relaxed));
         s.seconds_since_rekordbox_msg = ago(self.last_rb_ms.load(Ordering::Relaxed));
         s.rekordbox_linked = self.rb_linked.load(Ordering::Relaxed);
+        s.controller_messages_sent = self.ctl_sent.load(Ordering::Relaxed);
+        s.controller_send_errors = self.ctl_errors.load(Ordering::Relaxed);
+        s.last_send_error = lock(&self.last_send_error).clone();
         s
     }
 
@@ -359,8 +386,13 @@ impl Runtime {
                     lock(&self.status).controller_error = None;
                 }
             }
+            let out_names: Vec<String> = match MidiOutput::new("RekordJog scan") {
+                Ok(m) => m.ports().iter().filter_map(|p| m.port_name(p).ok()).filter(|n| !vport::is_own_port(n)).collect(),
+                Err(_) => Vec::new(),
+            };
             {
                 let mut st = lock(&self.status);
+                st.midi_outputs = out_names;
                 st.midi_inputs = names.into_iter().filter(|n| !vport::is_own_port(n)).collect();
                 st.controller = ctl_name.clone();
             }
@@ -384,30 +416,47 @@ impl Runtime {
             .connect(&port, "RekordJog Mixtrack Go", move |_t, msg, _| rt.on_controller(msg), ())
             .map_err(|_| busy.to_string())?;
 
-        // LED output: same name, or the closest Mixtrack Go output.
-        let out = MidiOutput::new("RekordJog").ok().and_then(|o| {
-            let ports = o.ports();
-            let pick = ports
+        // LED outputs: every output that belongs to the controller. Some
+        // systems list it as several ports, and the lights may only listen
+        // on one of them, so send to all.
+        let mut outs: Vec<(String, MidiOutputConnection)> = Vec::new();
+        let mut open_errors = Vec::new();
+        self.ctl_errors.store(0, Ordering::Relaxed);
+        *lock(&self.last_send_error) = None;
+        if let Ok(probe) = MidiOutput::new("RekordJog") {
+            let wanted: Vec<String> = probe
+                .ports()
                 .iter()
-                .find(|p| o.port_name(p).ok().as_deref() == Some(name))
-                .or_else(|| {
-                    ports.iter().find(|p| {
-                        o.port_name(p).map(|n| normalize(&n) == normalize(name) || looks_like_mixtrack_go(&n)).unwrap_or(false)
-                    })
-                })?
-                .clone();
-            o.connect(&pick, "RekordJog Mixtrack Go LEDs").ok()
-        });
+                .filter_map(|p| probe.port_name(p).ok())
+                .filter(|n| !vport::is_own_port(n) && (n == name || normalize(n) == normalize(name) || looks_like_mixtrack_go(n)))
+                .collect();
+            for (i, out_name) in wanted.iter().enumerate() {
+                let Ok(o) = MidiOutput::new("RekordJog") else { continue };
+                // pick the i-th port with this name, so duplicates each get opened
+                let same: Vec<_> = o.ports().into_iter().filter(|p| o.port_name(p).ok().as_deref() == Some(out_name.as_str())).collect();
+                let nth = wanted[..i].iter().filter(|n| *n == out_name).count();
+                let Some(port) = same.get(nth) else { continue };
+                match o.connect(port, "RekordJog Mixtrack Go LEDs") {
+                    Ok(c) => outs.push((out_name.clone(), c)),
+                    Err(e) => open_errors.push(format!("{out_name}: {e}")),
+                }
+            }
+        }
+        if !open_errors.is_empty() {
+            *lock(&self.last_send_error) = Some(format!("couldn't open {}", open_errors.join(", ")));
+        }
 
-        let has_out = out.is_some();
+        let has_out = !outs.is_empty();
+        let out_names: Vec<String> = outs.iter().map(|(n, _)| n.clone()).collect();
         {
             let mut core = lock(&self.core);
-            core.ctl_out = out;
+            core.ctl_out = outs;
             let outs = core.engine.controller_connected(self.now_ms());
             self.dispatch(&mut core, outs);
         }
         let mut st = lock(&self.status);
         st.controller_has_output = has_out;
+        st.controller_outputs = out_names;
         st.controller_error = None;
         Ok(conn)
     }
@@ -419,8 +468,11 @@ impl Runtime {
         }
         let mut core = lock(&self.core);
         let outs = core.engine.controller_disconnected();
-        core.ctl_out = None;
         self.dispatch(&mut core, outs);
-        lock(&self.status).controller_has_output = false;
+        core.ctl_out.clear();
+        drop(core);
+        let mut st = lock(&self.status);
+        st.controller_has_output = false;
+        st.controller_outputs.clear();
     }
 }
