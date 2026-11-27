@@ -54,14 +54,25 @@ async function pollLoop() {
   setTimeout(pollLoop, 150);
 }
 
-async function saveSettings() {
-  try {
-    S.settings = await invoke("save_settings", { settings: S.settings });
-    const c = await invoke("get_catalog");
-    S.bindings = c.bindings;
-  } catch (e) {
-    toast("Couldn't save settings: " + e);
-  }
+// Saves run one at a time, and the saved copy is merged into the existing
+// settings objects so every screen keeps editing the same live object
+// (replacing it made later changes on other screens silently get lost).
+let saveChain = Promise.resolve();
+function saveSettings() {
+  saveChain = saveChain.then(async () => {
+    try {
+      const saved = await invoke("save_settings", { settings: S.settings });
+      const engine = S.settings.engine;
+      Object.assign(engine, saved.engine);
+      saved.engine = engine;
+      Object.assign(S.settings, saved);
+      const c = await invoke("get_catalog");
+      S.bindings = c.bindings;
+    } catch (e) {
+      toast("Couldn't save settings: " + e);
+    }
+  });
+  return saveChain;
 }
 
 function toast(msg) {
@@ -371,8 +382,17 @@ const hex = (n) => n.toString(16).toUpperCase().padStart(2, "0");
 function renderPadSlots() {
   const e = S.settings.engine;
   const LIGHTS = [[0], [1], [1, 2], [2], [3]];
+  const nameOf = (id) => (S.catalog.pad_modes.find(([m]) => m === id) || [id, id])[1];
+  const used = e.pad_modes.filter((m) => m !== "off");
+  const dupes = [...new Set(used.filter((m, i) => used.indexOf(m) !== i))];
+  const order = used.map(nameOf).join(" → ") + " → " + nameOf(used[0]);
+  const notes = [];
+  if (dupes.length) notes.push(`<b>${dupes.map(nameOf).join(", ")}</b> is on more than one light, so pressing MODE will seem to do nothing between them.`);
+  if (used.includes("loops")) notes.push("rekordbox has no Loops pad mode for a DDJ-SX, so in Loops its pad panel keeps showing the previous mode. The pads still make loops, and the controller's LOOPS light (and RekordJog's Status page) shows you're in Loops.");
   const html = `<div class="mapsec"><h2>Pad modes (MODE button)</h2>
     <p class="muted">Tapping MODE steps through these, lighting the controller's mode lights as shown. Put any rekordbox pad mode on any light, or switch a light off to skip it.</p>
+    <p><b>MODE goes:</b> ${esc(order)}</p>
+    ${notes.map((n) => `<p class="callout" style="margin:0 0 10px">${n}</p>`).join("")}
     <div class="slotgrid">${S.catalog.pad_slots.map((name, i) => `<div class="slot">
       <div class="lights">${[0, 1, 2, 3].map((l) => `<i class="${LIGHTS[i].includes(l) ? "on" : ""}" title="${["HOT CUE", "LOOPS", "SAMPLER", "STEMS"][l]}"></i>`).join("")}</div>
       <b>${esc(name)}</b>
