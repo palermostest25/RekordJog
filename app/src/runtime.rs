@@ -42,6 +42,8 @@ pub struct Status {
     pub controller_messages_sent: u64,
     pub controller_send_errors: u64,
     pub last_send_error: Option<String>,
+    /// Last SysEx the controller sent (it answers RekordJog's start-up request).
+    pub controller_sysex_reply: Option<String>,
     pub controller_error: Option<String>,
     /// Every MIDI input the OS reports (for manual selection).
     pub midi_inputs: Vec<String>,
@@ -194,6 +196,12 @@ impl Runtime {
     fn on_controller(&self, msg: &[u8]) {
         self.last_ctl_ms.store(self.now_ms(), Ordering::Relaxed);
         self.log("ctl>", msg);
+        if msg.first() == Some(&0xF0) {
+            // e.g. the reply to our identity request: proof SysEx gets through
+            let shown = &msg[..msg.len().min(40)];
+            lock(&self.status).controller_sysex_reply = Some(hex(shown));
+            return;
+        }
         let mut core = lock(&self.core);
         let outs = core.engine.on_controller(msg);
         self.dispatch(&mut core, outs);
@@ -405,7 +413,8 @@ impl Runtime {
         let busy = "Your Mixtrack Go is in use by another app. Close Serato, djay, VirtualDJ or Mixxx \
                     (or rekordbox, then reopen it after RekordJog connects).";
         let mut input = MidiInput::new("RekordJog").map_err(|e| e.to_string())?;
-        input.ignore(Ignore::All);
+        // let SysEx through so the controller's replies show up in diagnostics
+        input.ignore(Ignore::TimeAndActiveSense);
         let port = input
             .ports()
             .into_iter()
@@ -423,6 +432,7 @@ impl Runtime {
         let mut open_errors = Vec::new();
         self.ctl_errors.store(0, Ordering::Relaxed);
         *lock(&self.last_send_error) = None;
+        lock(&self.status).controller_sysex_reply = None;
         if let Ok(probe) = MidiOutput::new("RekordJog") {
             let wanted: Vec<String> = probe
                 .ports()

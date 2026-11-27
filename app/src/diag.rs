@@ -272,6 +272,7 @@ pub fn report(s: &Status, checks: &[Check]) -> String {
         "Controller: {:?}, light outputs: {:?}, sent {} message(s), {} failed, last error: {:?}\n",
         s.controller, s.controller_outputs, s.controller_messages_sent, s.controller_send_errors, s.last_send_error
     ));
+    r.push_str(&format!("Controller SysEx reply: {:?}\n", s.controller_sysex_reply));
     r.push_str(&format!("Virtual port: {:?}\n", s.vport));
     r.push_str(&format!(
         "rekordbox: installed={} version={:?} running={} linked={} mapping={:?}\n",

@@ -146,8 +146,25 @@ fn open_url(url: String) -> Result<(), String> {
 
 #[tauri::command]
 fn report(state: State<AppState>) -> String {
-    let status = state.0.status();
-    diag::report(&status, &diag::checks(&status))
+    let rt = &state.0;
+    let status = rt.status();
+    let mut r = diag::report(&status, &diag::checks(&status));
+    r.push_str(&format!("Settings: {}\n", serde_json::to_string(&lock(&rt.settings).engine).unwrap_or_default()));
+    let profiles = rekordbox::profile_summary(&status.rekordbox);
+    r.push_str(&format!("rekordbox controller profiles ({}):\n", profiles.len()));
+    for p in profiles {
+        r.push_str(&format!("  {p}\n"));
+    }
+    let log = rt.log_since(0);
+    if log.is_empty() {
+        r.push_str("MIDI log: (not recorded — turn on Record on the MIDI monitor page first)\n");
+    } else {
+        r.push_str(&format!("MIDI log (last {} messages):\n", log.len()));
+        for l in log {
+            r.push_str(&format!("{:>8.2} {:<4} {}\n", l.t as f64 / 1000.0, l.dir, l.hex));
+        }
+    }
+    r
 }
 
 #[tauri::command]
@@ -202,14 +219,22 @@ fn main() {
             updater_setup.start(rt_setup.clone(), app.handle().clone());
 
             let show = MenuItem::with_id(app, "show", "Show RekordJog", true, None::<&str>)?;
+            let updates = MenuItem::with_id(app, "updates", "Check for Updates…", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit RekordJog", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &updates, &quit])?;
             let mut tray = TrayIconBuilder::with_id("main")
                 .tooltip("RekordJog")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, e| match e.id.as_ref() {
                     "show" => show_main(app),
+                    "updates" => {
+                        app.state::<UpdaterState>().0.request_check();
+                        show_main(app);
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.eval("window.showUpdates && window.showUpdates()");
+                        }
+                    }
                     "quit" => app.exit(0),
                     _ => {}
                 })

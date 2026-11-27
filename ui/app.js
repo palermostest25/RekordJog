@@ -274,6 +274,8 @@ function bindDash() {
     renderMapping();
     toast("Mapping reset to defaults");
   });
+  window.showUpdates = () => { setView("settings"); $("#upd-check").scrollIntoView({ block: "center" }); };
+  $("#side-update").addEventListener("click", () => { invoke("check_updates"); window.showUpdates(); toast("Checking for updates…"); });
   $("#refresh-lights").addEventListener("click", () => { invoke("refresh_lights"); toast("Stopping the light show and repainting the controller's lights…"); });
   $("#rerun-setup").addEventListener("click", () => showWizard(0));
   $("#quit-app").addEventListener("click", () => invoke("quit"));
@@ -283,7 +285,7 @@ function bindDash() {
   });
   $("#copy-report").addEventListener("click", async () => {
     const text = await invoke("report");
-    try { await navigator.clipboard.writeText(text); toast("Diagnostics copied — paste them into a bug report"); }
+    try { await navigator.clipboard.writeText(text); toast($("#mon-on").checked ? "Diagnostics + MIDI log copied — paste them into the chat" : "Copied — tip: turn on Record first to include the MIDI log"); }
     catch { toast("Couldn't access the clipboard"); }
   });
 }

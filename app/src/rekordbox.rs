@@ -229,3 +229,53 @@ mod tests {
         assert!(version_key("7.10.0") > version_key("7.9.9"));
     }
 }
+
+/// Summarise every controller profile in rekordbox's MidiMappings folder:
+/// which pad modes it has (by rekordbox's own function names). Used to
+/// pick a better profile to emulate than the DDJ-SX.
+pub fn profile_summary(info: &RekordboxInfo) -> Vec<String> {
+    let Some(dir) = info.mapping_path.as_deref().map(Path::new).and_then(Path::parent) else { return Vec::new() };
+    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut out = Vec::new();
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if !name.to_ascii_lowercase().ends_with(".csv") {
+            continue;
+        }
+        let text = std::fs::read_to_string(e.path()).unwrap_or_default();
+        let mut modes: Vec<&str> = Vec::new();
+        for line in text.lines() {
+            let f: Vec<&str> = line.split(',').collect();
+            if f.len() < 3 || f[2].trim() != "Pad" {
+                continue;
+            }
+            // "PAD1.BeatLoop" -> "BeatLoop"
+            let func = f[1].trim();
+            if let Some(m) = func.strip_prefix("PAD1.").map(|m| m.split('.').next().unwrap_or(m)) {
+                if !modes.contains(&m) {
+                    modes.push(m);
+                }
+            }
+        }
+        out.push(format!("{name}: {}", if modes.is_empty() { "-".to_string() } else { modes.join(" ") }));
+    }
+    out.sort();
+    out
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+
+    #[test]
+    fn summarises_pad_modes() {
+        let dir = std::env::temp_dir().join(format!("rj-prof-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(MAPPING_FILE), include_str!("../../docs/PIONEER DDJ-SX.midi.original.csv")).unwrap();
+        let info = RekordboxInfo { mapping_path: Some(dir.join(MAPPING_FILE).display().to_string()), ..Default::default() };
+        let s = profile_summary(&info);
+        assert_eq!(s.len(), 1);
+        assert!(s[0].contains("HotCue") && s[0].contains("BeatJump") && !s[0].contains("BeatLoop"), "{}", s[0]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
